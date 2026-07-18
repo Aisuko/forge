@@ -26,5 +26,12 @@ target
 
 target/
 Cargo.lock
+.env
 
 
+# Model weights
+models/
+checkpoints/
+data/
+examples/
+models/

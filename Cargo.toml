@@ -3,4 +3,37 @@ name = "forge"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
+bytemuck = "1"
+fancy-regex = "0.14"
+rand = "0.9"
+safetensors = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wgpu = "26"
+
+# Native only: sync facades (pollster / poll-wait readback) and rayon.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+rayon = "1"
+
+# Browser (wasm32): async-only device APIs + JS bindings.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+# Smaller wasm binaries; negligible effect on native perf here.
+lto = "thin"

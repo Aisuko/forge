@@ -18,11 +18,22 @@
 	},
 	"runArgs": [
 		"--gpus",
-		"all"
+		"all",
+		// The NVIDIA Vulkan ICD needs the DRM render/primary nodes and the
+		// modeset node; the default device cgroup only allowlists the compute
+		// nodes (nvidiactl/nvidia0/uvm), which makes the ICD bail out and
+		// wgpu silently fall back to llvmpipe.
+		"--device-cgroup-rule=c 226:* rmw",
+		"--device-cgroup-rule=c 195:* rmw",
+		"--device=/dev/dri"
 	],
+	// Vulkan loader + software fallback; scripts/setup_nvidia_vulkan.sh adds
+	// the NVIDIA ICD manifest, GLVND, and the modeset node.
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 && bash scripts/setup_nvidia_vulkan.sh || true",
 	"containerEnv": {
 		"NVIDIA_VISIBLE_DEVICES": "all",
-		"NVIDIA_DRIVER_CAPABILITIES": "compute,utility"
+		// "graphics" is required for the NVIDIA Vulkan ICD, which wgpu needs on Linux
+		"NVIDIA_DRIVER_CAPABILITIES": "compute,utility,graphics"
 	},
 	"shutdownAction": "stopContainer"
 
