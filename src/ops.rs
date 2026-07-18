@@ -638,10 +638,17 @@ pub fn dropout(x: &Tensor, p: f32, seed: u32) -> Result<Tensor> {
     if p == 0.0 {
         return Ok(x.clone());
     }
+    // Compute the keep-scale once on the CPU and hand the same bits to both
+    // backends: GPU division isn't guaranteed correctly-rounded (unlike
+    // multiplication), so an independent 1.0/(1.0-p) on the GPU can be a
+    // few ULP off from the CPU's, breaking bit-for-bit parity.
+    let scale = 1.0f32 / (1.0 - p);
     let n = x.shape().numel();
     let storage = match x.storage() {
-        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(cpu::dropout(cpu_f32(x)?, p, seed).into())),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::dropout(gpu_storage(x)?, n, p, seed)),
+        Storage::Cpu(_) => {
+            Storage::Cpu(CpuStorage::F32(cpu::dropout(cpu_f32(x)?, p, scale, seed).into()))
+        }
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::dropout(gpu_storage(x)?, n, p, scale, seed)),
     };
     Ok(f32_tensor(storage, x.shape().clone()))
 }

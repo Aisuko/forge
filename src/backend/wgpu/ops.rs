@@ -419,11 +419,11 @@ pub fn ce_bwd(
     out
 }
 
-pub fn dropout(x: &WgpuStorage, n: usize, p: f32, seed: u32) -> WgpuStorage {
+pub fn dropout(x: &WgpuStorage, n: usize, p: f32, scale: f32, seed: u32) -> WgpuStorage {
     let out = alloc(&x.ctx, n);
     x.ctx.dispatch(
         "dropout",
-        &[n as u32, seed, p.to_bits(), 0],
+        &[n as u32, seed, p.to_bits(), scale.to_bits()],
         &[bind(x, n), bind(&out, n)],
         linear_grid(n),
     );

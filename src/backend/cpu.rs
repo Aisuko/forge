@@ -348,17 +348,17 @@ pub fn pcg_hash(x: u32) -> u32 {
 }
 
 /// Inverted dropout with a counter-based RNG: element i is kept when
-/// hash(seed, i) maps to u >= p, and scaled by 1/(1-p). Applying the same
-/// (seed, p) to dy gives the backward pass.
-pub fn dropout(x: &[f32], p: f32, seed: u32) -> Vec<f32> {
+/// hash(seed, i) maps to u >= p, and scaled by `scale` (the caller-computed
+/// 1/(1-p)). Applying the same (seed, p, scale) to dy gives the backward
+/// pass. `scale` is passed in (rather than recomputed here) so the CPU and
+/// WGSL kernel multiply by the exact same bits — see ops::dropout.
+pub fn dropout(x: &[f32], p: f32, scale: f32, seed: u32) -> Vec<f32> {
     x.iter()
         .enumerate()
         .map(|(i, &v)| {
             let r = pcg_hash(seed ^ (i as u32).wrapping_mul(0x9E37_79B9));
             let u = (r >> 8) as f32 / 16_777_216.0; // [0, 1)
-            // Divide (not multiply by a reciprocal) to match the WGSL kernel
-            // bit-for-bit.
-            if u >= p { v / (1.0 - p) } else { 0.0 }
+            if u >= p { v * scale } else { 0.0 }
         })
         .collect()
 }
