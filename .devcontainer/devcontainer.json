@@ -28,8 +28,13 @@
 		"--device=/dev/dri"
 	],
 	// Vulkan loader + software fallback; scripts/setup_nvidia_vulkan.sh adds
-	// the NVIDIA ICD manifest, GLVND, and the modeset node.
+	// the NVIDIA ICD manifest, the GLVND EGL vendor manifest, the modeset
+	// node, and fixes /dev/dri permissions.
 	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 && bash scripts/setup_nvidia_vulkan.sh || true",
+	// /dev/dri is re-mounted with the host's restrictive perms on every
+	// container start (not just creation), so the DAC/GLVND fixes need to
+	// re-run on every start too, not only once via postCreateCommand.
+	"postStartCommand": "bash scripts/setup_nvidia_vulkan.sh || true",
 	"containerEnv": {
 		"NVIDIA_VISIBLE_DEVICES": "all",
 		// "graphics" is required for the NVIDIA Vulkan ICD, which wgpu needs on Linux
