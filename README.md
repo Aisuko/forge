@@ -68,11 +68,10 @@ src/
   tokenizer/          byte-level BPE from vocab.json + merges.txt
   serialization/      safetensors loading
 shaders/              WGSL compute kernels
-docs/Forge_Roadmap_V3.md   roadmap, pitfalls, acceptance gates
 ```
 
 ## Roadmap
 
-See [docs/Forge_Roadmap_V3.md](docs/Forge_Roadmap_V3.md). Current state is
+See [docs/Forge_Roadmap_V4.md](docs/Forge_Roadmap_V4.md). Current state is
 **Stage 6 complete** (verified GPT-2 inference on CPU + WebGPU). Next:
 KV-cache decode, autograd, training on Tiny Shakespeare, wasm/browser.
