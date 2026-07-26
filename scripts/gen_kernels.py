@@ -57,9 +57,12 @@ def main(target):
         + "\n".join(cards)
         + "\n          </div>"
     )
+    # The pattern consumes three closing tags — the last card, #kernel-list,
+    # and the enclosing .wrap — so the replacement must emit exactly three.
+    # `block` already carries the first two.
     html, n = re.subn(
         r'<div id="kernel-list".*?</div>\s*</div>\s*</div>',
-        block + "\n        </div>\n      </div>",
+        block + "\n        </div>",
         html,
         count=1,
         flags=re.S,
