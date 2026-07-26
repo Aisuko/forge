@@ -3,10 +3,14 @@
 
 1. Every referenced asset exists — a 404 in production that works in local
    preview is the classic Pages failure.
-2. No root-absolute paths: the site is served from /forge/, not /.
-3. No cross-origin runtime references: no CDN, no HuggingFace fetch. (Links a
+2. Every module specifier inside every shipped .js resolves. three.js r185 is
+   *two* files (three.module.min.js imports ./three.core.min.js), and a missing
+   sibling breaks the module graph before a single line of scene.js runs — with
+   no console error a build step would notice.
+3. No root-absolute paths: the site is served from /forge/, not /.
+4. No cross-origin runtime references: no CDN, no HuggingFace fetch. (Links a
    visitor clicks are fine; a resource the page *loads* is not.)
-4. `.nojekyll` is present, or Jekyll drops every _-prefixed path.
+5. `.nojekyll` is present, or Jekyll drops every _-prefixed path.
 
 Usage: check_site.py [docs/dist]
 """
@@ -28,11 +32,9 @@ if not (dist / ".nojekyll").exists():
 
 refs = set(re.findall(r'(?:src|href)="([^"]+)"', html))
 imap = re.search(r'<script type="importmap">(.*?)</script>', html, re.S)
-if imap:
-    refs |= set(json.loads(imap.group(1))["imports"].values())
+importmap = json.loads(imap.group(1))["imports"] if imap else {}
+refs |= set(importmap.values())
 
-demo = (dist / "demo.js").read_text() if (dist / "demo.js").exists() else ""
-refs |= set(re.findall(r'import\("([^"]+)"\)', demo))
 # Fetched at runtime, so they must ship even though no tag names them.
 refs |= {"./model/model.safetensors", "./model/config.json", "./model/vocab.json"}
 
@@ -53,6 +55,50 @@ for r in sorted(refs):
         continue
     if not (dist / r.lstrip("./")).exists():
         problems.append(f"missing asset (would 404): {r}")
+
+# ── Module graph ──────────────────────────────────────────────────────────
+# Static (`from "x"`, `import "x"`, `export … from "x"`) and dynamic
+# (`import("x")`) specifiers, in every shipped module including the vendored
+# and wasm-bindgen-generated ones. Resolving these is what would have caught
+# the missing three.core.min.js at build time instead of in production.
+#
+# The specifier charset is deliberately narrow: minified three.js contains
+# English strings like "…resized from ("+w+")", and a permissive pattern reads
+# those as imports.
+SPEC = r"""["']([A-Za-z0-9_@~./-]+)["']"""
+SPECIFIERS = re.compile(
+    rf"""\bfrom\s*{SPEC}|\bimport\s*{SPEC}|\bimport\s*\(\s*{SPEC}"""
+)
+
+
+def specifiers(text):
+    """Every module specifier in `text`, from whichever alternative matched."""
+    return {next(g for g in m if g) for m in SPECIFIERS.findall(text)}
+
+for js in sorted(dist.rglob("*.js")):
+    text = js.read_text(errors="replace")
+    for spec in sorted(specifiers(text)):
+        if spec.startswith(("http://", "https://", "//", "data:")):
+            problems.append(f"{js.relative_to(dist)}: cross-origin import: {spec}")
+            continue
+        if spec.startswith("/"):
+            problems.append(
+                f"{js.relative_to(dist)}: root-absolute import (404 under /forge/): {spec}"
+            )
+            continue
+        if spec.startswith("."):
+            target = (js.parent / spec).resolve()
+        elif spec in importmap:
+            # Bare specifier, resolved by the page's importmap relative to the
+            # document, not to the importing file.
+            target = (dist / importmap[spec].lstrip("./")).resolve()
+        else:
+            problems.append(
+                f"{js.relative_to(dist)}: bare import with no importmap entry: {spec}"
+            )
+            continue
+        if not target.exists():
+            problems.append(f"{js.relative_to(dist)}: import would 404: {spec}")
 
 if problems:
     for p in problems:
