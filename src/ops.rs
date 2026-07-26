@@ -404,8 +404,20 @@ pub fn matmul_chunked_transb(a: &Tensor, chunks: &[Tensor], alpha: f32) -> Resul
             let mut n_off = 0usize;
             for ch in chunks {
                 let n_i = ch.shape().dim(0);
-                let part =
-                    cpu::matmul(a_data, cpu_f32(ch)?, None, m, k, n_i, 1, 0, 0, false, true, alpha);
+                let part = cpu::matmul(
+                    a_data,
+                    cpu_f32(ch)?,
+                    None,
+                    m,
+                    k,
+                    n_i,
+                    1,
+                    0,
+                    0,
+                    false,
+                    true,
+                    alpha,
+                );
                 for row in 0..m {
                     out[row * n_total + n_off..row * n_total + n_off + n_i]
                         .copy_from_slice(&part[row * n_i..(row + 1) * n_i]);
@@ -465,9 +477,9 @@ pub fn gelu_bwd(x: &Tensor, dy: &Tensor) -> Result<Tensor> {
     }
     let n = x.shape().numel();
     let storage = match x.storage() {
-        Storage::Cpu(_) => {
-            Storage::Cpu(CpuStorage::F32(cpu::gelu_bwd(cpu_f32(x)?, cpu_f32(dy)?).into()))
-        }
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::gelu_bwd(cpu_f32(x)?, cpu_f32(dy)?).into(),
+        )),
         Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::gelu_bwd(gpu_storage(x)?, gpu_storage(dy)?, n)),
     };
     Ok(f32_tensor(storage, x.shape().clone()))
@@ -514,7 +526,8 @@ pub fn layernorm_bwd(
     let pshape = gamma.shape().clone();
     match x.storage() {
         Storage::Cpu(_) => {
-            let dx = cpu::layernorm_bwd_dx(cpu_f32(x)?, cpu_f32(gamma)?, cpu_f32(dy)?, rows, cols, eps);
+            let dx =
+                cpu::layernorm_bwd_dx(cpu_f32(x)?, cpu_f32(gamma)?, cpu_f32(dy)?, rows, cols, eps);
             let (dg, db) = cpu::layernorm_bwd_dparams(cpu_f32(x)?, cpu_f32(dy)?, rows, cols, eps);
             Ok((
                 f32_tensor(Storage::Cpu(CpuStorage::F32(dx.into())), x.shape().clone()),
@@ -544,9 +557,9 @@ pub fn layernorm_bwd(
 pub fn sum_rows(x: &Tensor) -> Result<Tensor> {
     let (rows, cols) = last_dim_rows(x)?;
     let storage = match x.storage() {
-        Storage::Cpu(_) => {
-            Storage::Cpu(CpuStorage::F32(cpu::sum_rows(cpu_f32(x)?, rows, cols).into()))
-        }
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::sum_rows(cpu_f32(x)?, rows, cols).into(),
+        )),
         Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::sum_rows(gpu_storage(x)?, rows, cols)),
     };
     Ok(f32_tensor(storage, Shape::new(&[cols])))
@@ -570,7 +583,9 @@ pub fn scatter_add_rows(dst: &mut Tensor, ids: &Tensor, src: &Tensor) -> Result<
         (Storage::Cpu(CpuStorage::F32(d)), Storage::Cpu(CpuStorage::F32(s))) => {
             let ids = cpu_u32(ids)?;
             if let Some(&bad) = ids.iter().find(|&&id| id as usize >= vocab) {
-                return Err(ForgeError::Shape(format!("scatter_add id {bad} >= {vocab}")));
+                return Err(ForgeError::Shape(format!(
+                    "scatter_add id {bad} >= {vocab}"
+                )));
             }
             let d: &mut Vec<f32> = std::sync::Arc::make_mut(d);
             cpu::scatter_add_rows(d, ids, s, c);
@@ -645,9 +660,9 @@ pub fn dropout(x: &Tensor, p: f32, seed: u32) -> Result<Tensor> {
     let scale = 1.0f32 / (1.0 - p);
     let n = x.shape().numel();
     let storage = match x.storage() {
-        Storage::Cpu(_) => {
-            Storage::Cpu(CpuStorage::F32(cpu::dropout(cpu_f32(x)?, p, scale, seed).into()))
-        }
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::dropout(cpu_f32(x)?, p, scale, seed).into(),
+        )),
         Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::dropout(gpu_storage(x)?, n, p, scale, seed)),
     };
     Ok(f32_tensor(storage, x.shape().clone()))
@@ -699,9 +714,7 @@ pub fn sumsq(x: &Tensor) -> Result<f32> {
         #[cfg(not(target_arch = "wasm32"))]
         Storage::Wgpu(s) => {
             let (partials, groups) = gpu::ops::sumsq_partials(s, x.shape().numel());
-            let bytes = partials
-                .ctx
-                .readback(&partials.buf, 0, groups * 4)?;
+            let bytes = partials.ctx.readback(&partials.buf, 0, groups * 4)?;
             let vals: Vec<f32> = bytemuck::pod_collect_to_vec(&bytes);
             Ok(vals.iter().sum())
         }
@@ -717,7 +730,11 @@ pub fn scale(x: &Tensor, alpha: f32) -> Result<Tensor> {
     let n = x.shape().numel();
     let storage = match x.storage() {
         Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu_f32(x)?.iter().map(|&v| v * alpha).collect::<Vec<_>>().into(),
+            cpu_f32(x)?
+                .iter()
+                .map(|&v| v * alpha)
+                .collect::<Vec<_>>()
+                .into(),
         )),
         Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::scale(gpu_storage(x)?, n, alpha)),
     };

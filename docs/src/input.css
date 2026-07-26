@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/* Tailwind v4 has no tailwind.config.js — configuration lives here. Content
+   detection is automatic, but these are explicit so a CI build from a
+   different working directory cannot silently drop classes. */
+@source "./index.html";
+@source "./scene.js";
+@source "./demo.js";
+
+@theme {
+  --color-forge-50: #fff4ed;
+  --color-forge-100: #ffe6d5;
+  --color-forge-300: #ffb185;
+  --color-forge-500: #ff8a4c;
+  --color-forge-600: #ea6a24;
+  --color-forge-700: #c14f18;
+
+  --color-ink-50: #f7f7f8;
+  --color-ink-100: #ebebee;
+  --color-ink-300: #b4b4bd;
+  --color-ink-500: #6b6b78;
+  --color-ink-700: #35353f;
+  --color-ink-800: #212128;
+  --color-ink-900: #16161b;
+  --color-ink-950: #0d0d11;
+
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* An accessibility requirement, not a nicety: honour the OS setting. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  body {
+    @apply bg-white text-ink-800 antialiased;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      @apply bg-ink-950 text-ink-100;
+    }
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-forge-600;
+  }
+}
+
+@layer components {
+  .wrap {
+    @apply mx-auto w-full max-w-5xl px-5;
+  }
+
+  .section {
+    @apply scroll-mt-20 border-t border-ink-100 py-16 dark:border-ink-800;
+  }
+
+  .h2 {
+    @apply text-2xl font-semibold tracking-tight sm:text-3xl;
+  }
+
+  .lede {
+    @apply mt-3 max-w-2xl text-ink-500 dark:text-ink-300;
+  }
+
+  .card {
+    @apply rounded-xl border border-ink-100 bg-ink-50/60 p-5
+           dark:border-ink-800 dark:bg-ink-900/60;
+  }
+
+  /* v4's @apply cannot reference another custom class, so the shared button
+     shape is repeated rather than composed. */
+  .btn,
+  .btn-primary,
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm
+           font-medium transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-forge-600 text-white hover:bg-forge-700;
+  }
+
+  .btn-ghost {
+    @apply border border-ink-100 hover:bg-ink-50
+           dark:border-ink-700 dark:hover:bg-ink-800;
+  }
+
+  .chip {
+    @apply inline-block rounded-md border border-ink-100 px-2 py-1
+           font-mono text-xs text-ink-500
+           dark:border-ink-800 dark:text-ink-300;
+  }
+
+  /* Wide content must scroll inside its own box; the page body must never
+     scroll horizontally. */
+  .scroll-x {
+    @apply overflow-x-auto;
+  }
+}

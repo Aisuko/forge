@@ -26,10 +26,6 @@ impl Device {
         Ok(Device::Wgpu(WgpuContext::new_async().await?))
     }
 
-    pub fn is_cpu(&self) -> bool {
-        matches!(self, Device::Cpu)
-    }
-
     /// Human-readable adapter description.
     pub fn describe(&self) -> String {
         match self {

@@ -25,13 +25,23 @@ target
 # Added by cargo
 
 target/
-Cargo.lock
 .env
 
 
-# Model weights
-models/
-checkpoints/
-data/
-examples/
-models/
+# Model weights and training corpora. All three are anchored with a leading
+# slash on purpose -- an unanchored pattern matches at every depth, which is
+# how `models/` silently untracked the whole of `src/models/` and `data/`
+# untracked the `tests/data/` golden fixture. Keep the slashes.
+/models/
+/checkpoints/
+/data/
+
+# `assets/` is deliberately NOT ignored: assets/shakespeare_char/ is the 43 MB
+# demo checkpoint the website and TUI both load, so it must be in the repo.
+# Not Git LFS either — Pages serves LFS pointer files as text, which would
+# silently break the web demo.
+
+# Site build output and the downloaded Tailwind CLI.
+/docs/dist/
+/.cache/
+Cargo.lock

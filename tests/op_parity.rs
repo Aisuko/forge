@@ -33,7 +33,8 @@ fn wgpu_device() -> Device {
     // One device per test binary: concurrent device creation from parallel
     // test threads segfaults some Vulkan drivers (observed on llvmpipe).
     static DEV: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
-    DEV.get_or_init(|| Device::wgpu().expect("wgpu device")).clone()
+    DEV.get_or_init(|| Device::wgpu().expect("wgpu device"))
+        .clone()
 }
 
 #[test]
@@ -202,7 +203,7 @@ fn kv_append_parity() {
     let gpu = wgpu_device();
     let (h, hd, cap) = (3usize, 8usize, 16usize);
     let first = rand_vec(&mut rng, h * 5 * hd); // t = 5
-    let second = rand_vec(&mut rng, h * 1 * hd); // t = 1
+    let second = rand_vec(&mut rng, h * hd); // t = 1
     let run = |dev: &Device| {
         let mut cache = Tensor::zeros([h, cap, hd], dev).unwrap();
         let f = Tensor::from_f32(&first, [h, 5, hd], dev).unwrap();
@@ -215,7 +216,7 @@ fn kv_append_parity() {
     let wgpu = run(&gpu);
     assert_eq!(cpu, wgpu, "kv_append CPU vs WGPU");
     // Spot-check placement: head 1, position 5 must hold `second`'s head 1.
-    let base = 1 * cap * hd + 5 * hd;
+    let base = cap * hd + 5 * hd;
     assert_eq!(&cpu[base..base + hd], &second[hd..2 * hd], "kv placement");
 }
 

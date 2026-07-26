@@ -1,0 +1,90 @@
+name: CI
+
+# Scope note: GitHub-hosted runners have no NVIDIA GPU. The WGPU-backed tests
+# below therefore execute against Mesa's software Vulkan driver (lavapipe),
+# which exercises the real WGSL kernel path but not real GPU hardware.
+# GPU-backed parity — the published CPU<->WGPU max logit diff of 8.4e-5 and the
+# Forge<->HF transformers diff of 1.75e-4 — is verified locally on an NVIDIA
+# RTX A5000, not in CI. See scripts/setup_nvidia_vulkan.sh.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test-cpu:
+    name: tests (llvmpipe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Software Vulkan ICD so the WGPU code path still runs without a GPU.
+      - name: Install software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+
+      # tests/gpt2_e2e.rs and tests/kv_cache.rs need models/gpt2 (548 MB, and
+      # correctly gitignored), so they are excluded here and stay a local
+      # concern. tests/tokenizer.rs is included because it self-skips when the
+      # weights are absent.
+      - name: Test (weight-independent suites)
+        run: |
+          cargo test --release --locked \
+            --test op_parity \
+            --test tokenizer \
+            --test char_model \
+            --test streaming \
+            --test train_ops \
+            --test training \
+            --test autograd
+
+  build-wasm:
+    name: build wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target wasm32-unknown-unknown
+
+  build-tui:
+    name: build forge-top
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --features tui --bin forge-top
+
+      # The TUI deps must never reach the library's dependents or the wasm
+      # build; they are optional, behind the `tui` feature, for that reason.
+      - name: Assert the default build pulls no TUI dependencies
+        run: |
+          for dep in ratatui crossterm sysinfo nvml-wrapper memmap2; do
+            n=$(cargo tree -e normal --locked | grep -c "^.*[^a-z-]$dep v" || true)
+            if [ "$n" -ne 0 ]; then
+              echo "::error::$dep leaked into the default dependency tree"
+              exit 1
+            fi
+          done

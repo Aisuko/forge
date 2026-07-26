@@ -6,6 +6,23 @@ edition = "2024"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[features]
+# The `forge-top` TUI. Kept behind a feature so its deps never reach the wasm
+# build or the library's dependents — verify with
+# `cargo tree -e normal | grep -c ratatui` -> 0.
+tui = [
+    "dep:ratatui",
+    "dep:crossterm",
+    "dep:sysinfo",
+    "dep:nvml-wrapper",
+    "dep:memmap2",
+]
+
+[[bin]]
+name = "forge-top"
+path = "src/bin/forge-top/main.rs"
+required-features = ["tui"]
+
 [dependencies]
 bytemuck = "1"
 fancy-regex = "0.14"
@@ -19,10 +36,20 @@ wgpu = "26"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4"
 rayon = "1"
+# `tui` feature only (see [features]); all optional so a default build and the
+# wasm build pull none of them.
+ratatui = { version = "0.30", optional = true }
+crossterm = { version = "0.29", optional = true }
+sysinfo = { version = "0.39", optional = true }
+nvml-wrapper = { version = "0.12", optional = true }
+memmap2 = { version = "0.9", optional = true }
 
 # Browser (wasm32): async-only device APIs + JS bindings.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+# No source-level `use`, but required: the #[wasm_bindgen] attribute macro
+# expands the `async fn` exports in src/wasm.rs into code that names
+# `wasm_bindgen_futures`. Removing it fails the wasm32 build with E0433.
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"

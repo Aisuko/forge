@@ -166,7 +166,12 @@ impl WgpuContext {
         buf
     }
 
-    fn stage_copy(&self, buf: &wgpu::Buffer, offset_bytes: usize, size_bytes: usize) -> wgpu::Buffer {
+    fn stage_copy(
+        &self,
+        buf: &wgpu::Buffer,
+        offset_bytes: usize,
+        size_bytes: usize,
+    ) -> wgpu::Buffer {
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: size_bytes as u64,

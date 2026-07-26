@@ -1,0 +1,98 @@
+name: Pages
+
+# Deploys the explainer site + live demo to https://aisuko.github.io/forge/.
+#
+# ONE-TIME MANUAL SETUP: Settings -> Pages -> Build and deployment -> Source
+# must be set to "GitHub Actions". Left on "Deploy from a branch",
+# actions/deploy-pages fails with a permissions-shaped error that does not name
+# the real cause.
+
+on:
+  push:
+    branches: [main]
+    # The artifact is ~45 MB, so every deploy is slow; only rebuild when
+    # something the site actually renders has changed.
+    paths:
+      - 'docs/**'
+      - 'src/**' # the wasm bundle is rebuilt from source on every deploy
+      - 'assets/shakespeare_char/**'
+      - 'shaders/**' # the kernel inventory is generated from this directory
+      - 'scripts/build_site.sh'
+      - 'scripts/gen_kernels.py'
+      - '.github/workflows/pages.yml'
+      - 'README.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy in progress: a half-published site is worse than a
+# slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAILWIND_VERSION: '4.3.3'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # The CLI version must match the wasm-bindgen crate exactly or it errors
+      # out on a schema mismatch, so it is read from the lockfile rather than
+      # hardcoded here.
+      - name: Install wasm-bindgen-cli matching Cargo.lock
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/,""); print $3; exit}' Cargo.lock)
+          echo "wasm-bindgen crate version: $version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: Download the Tailwind standalone CLI
+        run: |
+          mkdir -p .cache
+          # Pinned: fetching 'latest' would let an upstream release break the site.
+          curl -sSfL -o ".cache/tailwindcss-${TAILWIND_VERSION}" \
+            "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWIND_VERSION}/tailwindcss-linux-x64"
+          chmod +x ".cache/tailwindcss-${TAILWIND_VERSION}"
+
+      # The wasm bundle is built from src/ into dist/ — there is no committed
+      # copy that could go stale relative to the source it was built from.
+      - name: Build the site
+        run: ./scripts/build_site.sh
+
+      # Missing assets, root-absolute paths, cross-origin runtime fetches, and
+      # a missing .nojekyll all produce a site that builds fine and breaks in
+      # production. Fail here instead.
+      - name: Verify the artifact
+        run: |
+          test -f docs/dist/forge/forge_bg.wasm
+          python3 scripts/check_site.py docs/dist
+          du -sh docs/dist
+
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

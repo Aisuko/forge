@@ -42,54 +42,61 @@ pub fn matmul(
     let rows = out.par_chunks_mut(n);
     #[cfg(target_arch = "wasm32")]
     let rows = out.chunks_mut(n);
-    rows.enumerate()
-        .for_each(|(row_idx, orow)| {
-            let bat = row_idx / m;
-            let i = row_idx % m;
-            let a_base = bat * a_stride;
-            let b_base = bat * b_stride;
-            let a_at = |kk: usize| {
-                if trans_a {
-                    a[a_base + kk * m + i]
-                } else {
-                    a[a_base + i * k + kk]
-                }
-            };
-            if trans_b {
-                for (j, o) in orow.iter_mut().enumerate() {
-                    let b_row = &b[b_base + j * k..b_base + (j + 1) * k];
-                    let dot: f32 = b_row
-                        .iter()
-                        .enumerate()
-                        .map(|(kk, &bv)| a_at(kk) * bv)
-                        .sum();
-                    *o = dot * alpha;
-                }
+    rows.enumerate().for_each(|(row_idx, orow)| {
+        let bat = row_idx / m;
+        let i = row_idx % m;
+        let a_base = bat * a_stride;
+        let b_base = bat * b_stride;
+        let a_at = |kk: usize| {
+            if trans_a {
+                a[a_base + kk * m + i]
             } else {
-                for kk in 0..k {
-                    let av = a_at(kk);
-                    let b_row = &b[b_base + kk * n..b_base + (kk + 1) * n];
-                    for (o, &bv) in orow.iter_mut().zip(b_row) {
-                        *o += av * bv;
-                    }
-                }
-                if alpha != 1.0 {
-                    for o in orow.iter_mut() {
-                        *o *= alpha;
-                    }
+                a[a_base + i * k + kk]
+            }
+        };
+        if trans_b {
+            for (j, o) in orow.iter_mut().enumerate() {
+                let b_row = &b[b_base + j * k..b_base + (j + 1) * k];
+                let dot: f32 = b_row
+                    .iter()
+                    .enumerate()
+                    .map(|(kk, &bv)| a_at(kk) * bv)
+                    .sum();
+                *o = dot * alpha;
+            }
+        } else {
+            for kk in 0..k {
+                let av = a_at(kk);
+                let b_row = &b[b_base + kk * n..b_base + (kk + 1) * n];
+                for (o, &bv) in orow.iter_mut().zip(b_row) {
+                    *o += av * bv;
                 }
             }
-            if let Some(bias) = bias {
-                for (o, &bb) in orow.iter_mut().zip(bias) {
-                    *o += bb;
+            if alpha != 1.0 {
+                for o in orow.iter_mut() {
+                    *o *= alpha;
                 }
             }
-        });
+        }
+        if let Some(bias) = bias {
+            for (o, &bb) in orow.iter_mut().zip(bias) {
+                *o += bb;
+            }
+        }
+    });
     out
 }
 
 /// Append src [h, t, hd] into dst [h, cap, hd] at row offset `len` per head.
-pub fn kv_append(dst: &mut [f32], src: &[f32], h: usize, t: usize, hd: usize, cap: usize, len: usize) {
+pub fn kv_append(
+    dst: &mut [f32],
+    src: &[f32],
+    h: usize,
+    t: usize,
+    hd: usize,
+    cap: usize,
+    len: usize,
+) {
     for hh in 0..h {
         for tt in 0..t {
             let d0 = hh * cap * hd + (len + tt) * hd;

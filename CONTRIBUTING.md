@@ -62,7 +62,7 @@ tests/                integration tests; see "Testing" below
 examples/             runnable binaries (generate, train_shakespeare, ...) —
                        gitignored (local/generated), run via `cargo run --example`
 scripts/              setup/data-fetch/build helpers (see below)
-web/                  browser demo (wasm build output + index.html)
+docs/                 roadmap + website source (built into docs/dist/)
 models/, data/,
 checkpoints/          local, gitignored — model weights, datasets, and
                        training checkpoints fetched/produced by scripts
@@ -105,7 +105,12 @@ What each test file checks:
 - `tests/op_parity.rs` — every WGSL kernel vs. the CPU reference, including
   non-square and non-power-of-two shapes (tolerance ≤ 1e-4 abs)
 - `tests/tokenizer.rs` — byte-level BPE vs. known GPT-2 encodings
-  (requires `models/gpt2/vocab.json` + `merges.txt`; skipped when absent)
+  (requires `models/gpt2/vocab.json` + `merges.txt`; skipped when absent),
+  plus the character-level vocab round-tripping all of Tiny Shakespeare
+- `tests/streaming.rs` — `generate_streaming` is byte-identical to `generate`
+  and its callback fires exactly once per generated token (no weights needed)
+- `tests/char_model.rs` — the shipped `assets/shakespeare_char/` checkpoint:
+  config/vocab agreement, and identical greedy output on CPU and WGPU
 - `tests/gpt2_e2e.rs` — CPU vs. WGPU last-position logits (≤ 5e-3 abs),
   identical greedy continuations on both backends, and (when
   `tests/data/hf_golden.json` exists) a golden check against HF
@@ -146,9 +151,9 @@ cargo run --release --example generate -- --backend wgpu --prompt "Hello Forge!"
 If you're touching the browser/wasm path, build and serve the demo:
 
 ```bash
-./scripts/build_web.sh   # requires rustup target add wasm32-unknown-unknown
-                          # and wasm-bindgen-cli matching the wasm-bindgen crate version
-./scripts/serve_web.sh   # serves at http://localhost:8000/web/
+./scripts/build_site.sh  # requires rustup target add wasm32-unknown-unknown
+                         # and wasm-bindgen-cli matching the wasm-bindgen crate version
+./scripts/serve_web.sh   # serves the built site at http://localhost:8000/
 ```
 
 ## Making a change

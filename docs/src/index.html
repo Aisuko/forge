@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Forge — a nanoGPT-class GPT in Rust, WebGPU-native</title>
+    <meta
+      name="description"
+      content="Forge is a WebGPU-native machine learning framework in Rust. Train a 43 MB
+               character-level Shakespeare model from scratch, then load real OpenAI GPT-2 124M
+               weights with the same code."
+    />
+    <!-- Relative, never root-absolute: the site is served from /forge/, not /. -->
+    <link rel="stylesheet" href="./assets/app.css" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <script type="importmap">
+      { "imports": { "three": "./vendor/three.module.min.js" } }
+    </script>
+  </head>
+  <body>
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded focus:bg-forge-600 focus:px-3 focus:py-2 focus:text-white"
+      >Skip to content</a
+    >
+
+    <nav
+      class="sticky top-0 z-40 border-b border-ink-100 bg-white/85 backdrop-blur dark:border-ink-800 dark:bg-ink-950/85"
+    >
+      <div class="wrap flex h-14 items-center justify-between gap-4">
+        <a href="#top" class="flex items-center gap-2 font-semibold tracking-tight">
+          <span aria-hidden="true" class="text-forge-500">▰</span> Forge
+        </a>
+        <ul class="hidden gap-5 text-sm text-ink-500 sm:flex dark:text-ink-300">
+          <li><a class="hover:text-forge-600" href="#demo">Demo</a></li>
+          <li><a class="hover:text-forge-600" href="#stack">Architecture</a></li>
+          <li><a class="hover:text-forge-600" href="#verification">Verification</a></li>
+          <li><a class="hover:text-forge-600" href="#kernels">Kernels</a></li>
+          <li><a class="hover:text-forge-600" href="#roadmap">Roadmap</a></li>
+        </ul>
+        <a
+          class="btn-ghost text-sm"
+          href="https://github.com/Aisuko/forge"
+          rel="noopener"
+          >GitHub</a
+        >
+      </div>
+    </nav>
+
+    <main id="main">
+      <!-- ── Hero ────────────────────────────────────────────────────── -->
+      <header id="top" class="wrap py-16 sm:py-24">
+        <p class="chip">Rust · WebGPU · no CUDA, no Python</p>
+        <h1 class="mt-5 text-4xl font-bold tracking-tight sm:text-6xl">
+          A <span class="text-forge-600">nanoGPT-class</span> GPT in Rust,
+          WebGPU-native.
+        </h1>
+        <p class="lede text-lg">
+          Train a small Shakespeare model from scratch, then load real OpenAI
+          GPT-2 124M weights with the same code. Every operator, WGSL kernel,
+          and module exists because GPT-2 needs it.
+        </p>
+        <div class="mt-8 flex flex-wrap gap-3">
+          <a class="btn-primary" href="#demo">Run it in your browser</a>
+          <a class="btn-ghost" href="#quickstart">Quick start</a>
+          <a class="btn-ghost" href="https://github.com/Aisuko/forge" rel="noopener"
+            >Source</a
+          >
+        </div>
+
+        <dl class="mt-12 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div class="card">
+            <dt class="text-sm text-ink-500 dark:text-ink-300">Model on this page</dt>
+            <dd class="mt-1 text-2xl font-semibold">43 MB</dd>
+          </div>
+          <div class="card">
+            <dt class="text-sm text-ink-500 dark:text-ink-300">WGSL kernels</dt>
+            <dd class="mt-1 text-2xl font-semibold">23</dd>
+          </div>
+          <div class="card">
+            <dt class="text-sm text-ink-500 dark:text-ink-300">CPU ↔ WGPU logits</dt>
+            <dd class="mt-1 text-2xl font-semibold">8.4e-5</dd>
+          </div>
+          <div class="card">
+            <dt class="text-sm text-ink-500 dark:text-ink-300">Forge ↔ HF</dt>
+            <dd class="mt-1 text-2xl font-semibold">1.75e-4</dd>
+          </div>
+        </dl>
+      </header>
+
+      <!-- ── Live demo ───────────────────────────────────────────────── -->
+      <section id="demo" class="section">
+        <div class="wrap">
+          <h2 class="h2">Live demo — Shakespeare, on your GPU</h2>
+          <p class="lede">
+            A 10.77M-parameter character-level GPT (6 layers, 6 heads, 384
+            dimensions, 65-token vocabulary), trained from scratch by Forge on
+            Tiny Shakespeare and running here through WebGPU in your browser.
+            No server does the work — your GPU does.
+          </p>
+
+          <div class="card mt-8">
+            <!-- Replaced by demo.js when WebGPU is unavailable; the page stays
+                 complete either way. -->
+            <div id="demo-panel">
+              <noscript>
+                <p class="text-sm text-ink-500 dark:text-ink-300">
+                  The demo needs JavaScript. Everything else on this page works
+                  without it — or run the model locally with
+                  <code class="font-mono">./scripts/build_site.sh</code>.
+                </p>
+              </noscript>
+
+              <div id="demo-app" hidden>
+                <label
+                  for="demo-prompt"
+                  class="block text-sm font-medium">Prompt</label
+                >
+                <textarea
+                  id="demo-prompt"
+                  rows="2"
+                  class="mt-2 w-full rounded-lg border border-ink-100 bg-white p-3 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                >ROMEO:</textarea
+                >
+                <p
+                  id="demo-charset"
+                  class="mt-2 hidden text-sm text-forge-700 dark:text-forge-300"
+                  role="status"
+                ></p>
+
+                <div class="mt-4 flex flex-wrap items-end gap-4">
+                  <div>
+                    <label for="demo-tokens" class="block text-sm font-medium"
+                      >Tokens</label
+                    >
+                    <input
+                      id="demo-tokens"
+                      type="number"
+                      value="240"
+                      min="1"
+                      max="240"
+                      class="mt-1 w-24 rounded-lg border border-ink-100 bg-white p-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                    />
+                  </div>
+                  <div>
+                    <label for="demo-sampling" class="block text-sm font-medium"
+                      >Sampling</label
+                    >
+                    <select
+                      id="demo-sampling"
+                      class="mt-1 rounded-lg border border-ink-100 bg-white p-2 text-sm dark:border-ink-700 dark:bg-ink-900"
+                    >
+                      <option value="40">top-k 40, T=0.8</option>
+                      <option value="0">greedy</option>
+                    </select>
+                  </div>
+                  <button id="demo-run" class="btn-primary" type="button">
+                    Run
+                  </button>
+                  <button id="demo-stop" class="btn-ghost" type="button" hidden>
+                    Stop
+                  </button>
+                </div>
+
+                <div
+                  id="demo-progress-wrap"
+                  class="mt-4 hidden"
+                  aria-hidden="true"
+                >
+                  <div class="h-2 w-full overflow-hidden rounded bg-ink-100 dark:bg-ink-800">
+                    <div
+                      id="demo-progress"
+                      class="h-full w-0 bg-forge-500 transition-[width]"
+                    ></div>
+                  </div>
+                </div>
+
+                <p
+                  id="demo-status"
+                  class="mt-3 font-mono text-xs text-ink-500 dark:text-ink-300"
+                  role="status"
+                  aria-live="polite"
+                >
+                  Weights (43 MB) are fetched only when you press Run, then
+                  cached by your browser.
+                </p>
+
+                <pre
+                  id="demo-output"
+                  class="scroll-x mt-4 max-h-96 min-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-ink-100 bg-white p-4 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                ></pre>
+              </div>
+            </div>
+          </div>
+
+          <p class="mt-4 text-sm text-ink-500 dark:text-ink-300">
+            GPT-2 124M is 548 MB and stays a local artifact — run it with
+            <code class="font-mono">./scripts/build_site.sh &amp;&amp; ./scripts/serve_web.sh</code>.
+            Forge needs no <code class="font-mono">SharedArrayBuffer</code>,
+            because <code class="font-mono">rayon</code> is native-only, so this
+            page is plain static files.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── What it is ──────────────────────────────────────────────── -->
+      <section id="what" class="section">
+        <div class="wrap">
+          <h2 class="h2">Two backends, one model</h2>
+          <p class="lede">
+            Model code is backend-agnostic: the same
+            <code class="font-mono">Gpt2</code> runs on either device.
+          </p>
+          <div class="mt-8 grid gap-5 md:grid-cols-2">
+            <div class="card">
+              <h3 class="font-semibold">WGPU backend</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                The production path, via
+                <a class="text-forge-600 hover:underline" href="https://github.com/gfx-rs/wgpu" rel="noopener">wgpu</a>
+                — Vulkan, Metal, D3D12, and browser WebGPU from one set of WGSL
+                kernels. Reaching an NVIDIA GPU and reaching WebGPU are the same
+                code path; there is no separate CUDA backend to build.
+              </p>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">CPU backend</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                A mathematically identical reference implementation, used for
+                testing and verification. Every kernel is checked against it,
+                which is what makes the parity numbers below meaningful.
+              </p>
+            </div>
+          </div>
+
+          <div class="card mt-5">
+            <h3 class="font-semibold">Why “nanoGPT-class” is not a rebrand</h3>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              nanoGPT <em>is</em> the GPT-2 architecture — pre-LN blocks, causal
+              self-attention, a 4× GELU MLP, learned positional embeddings, and
+              weight tying — and its own headline feature is loading OpenAI
+              GPT-2 weights. This is one framework, not two modes.
+            </p>
+            <p class="mt-3 text-sm text-ink-500 dark:text-ink-300">
+              <strong class="text-ink-800 dark:text-ink-100">One honest caveat.</strong>
+              Forge stores <code class="font-mono">Linear</code> weights as
+              <code class="font-mono">[in, out]</code> (the HF Conv1D
+              convention), whereas upstream nanoGPT uses
+              <code class="font-mono">nn.Linear</code>'s
+              <code class="font-mono">[out, in]</code>. Checkpoints are
+              <strong class="text-ink-800 dark:text-ink-100">not</strong>
+              binary-interchangeable with nanoGPT
+              <code class="font-mono">.pt</code> files: four keys per block would
+              need transposing, and Forge reads safetensors rather than PyTorch
+              pickles.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Three.js visualization ──────────────────────────────────── -->
+      <section id="stack" class="section">
+        <div class="wrap">
+          <h2 class="h2">The stack, twelve blocks deep</h2>
+          <p class="lede">
+            GPT-2 124M is twelve identical transformer blocks. Hover one to
+            highlight it; click to expand its sub-layers with real tensor
+            shapes.
+          </p>
+
+          <div class="card mt-8 p-0">
+            <div
+              id="scene-holder"
+              class="relative aspect-4/3 w-full overflow-hidden rounded-xl sm:aspect-video"
+            >
+              <canvas id="scene" class="h-full w-full" aria-hidden="true"></canvas>
+              <p
+                id="scene-label"
+                class="pointer-events-none absolute bottom-3 left-4 font-mono text-xs text-ink-500 dark:text-ink-300"
+              ></p>
+            </div>
+          </div>
+
+          <!-- Also the no-WebGL fallback: scene.js moves this into the canvas
+               holder if the renderer cannot be constructed. -->
+          <div id="stack-static" class="card mt-5">
+            <h3 class="font-semibold">Architecture</h3>
+            <div class="scroll-x mt-3">
+              <pre class="font-mono text-xs leading-relaxed">
+GPT-2 model            models/gpt2/  config, blocks, KV-cache, generation
+  ↓
+nn modules + autograd  nn/  Linear, LayerNorm, Embedding (row-chunked wte)
+                       autograd/  tape, backward ops     optim/  AdamW
+  ↓
+tensor ops             ops.rs  shape-checked dispatch, both backends
+  ↓
+backend abstraction    backend/
+  ↓
+WGPU  ·············  CPU
+23 WGSL kernels      plain Rust reference</pre
+              >
+            </div>
+            <p class="mt-3 text-sm text-ink-500 dark:text-ink-300">
+              Per block: LayerNorm → causal self-attention (12 heads of 64
+              dimensions) → LayerNorm → MLP (768 → 3072 → 768, GELU). Context
+              1024 tokens, vocabulary 50257, LM head weight-tied to the token
+              embedding.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Verification ────────────────────────────────────────────── -->
+      <section id="verification" class="section">
+        <div class="wrap">
+          <h2 class="h2">Verification</h2>
+          <p class="lede">
+            Measured on this repository, not estimated. The CPU backend is the
+            correctness reference; HF <code class="font-mono">transformers</code>
+            is the external one.
+          </p>
+
+          <div class="scroll-x mt-8">
+            <table class="w-full min-w-[32rem] text-left text-sm">
+              <caption class="sr-only">
+                Maximum absolute logit differences
+              </caption>
+              <thead
+                class="border-b border-ink-100 text-ink-500 dark:border-ink-800 dark:text-ink-300"
+              >
+                <tr>
+                  <th scope="col" class="py-2 pr-4 font-medium">Comparison</th>
+                  <th scope="col" class="py-2 pr-4 font-medium">Max difference</th>
+                  <th scope="col" class="py-2 font-medium">Suite</th>
+                </tr>
+              </thead>
+              <tbody class="font-mono">
+                <tr class="border-b border-ink-100 dark:border-ink-800">
+                  <td class="py-2 pr-4">CPU ↔ WGPU logits</td>
+                  <td class="py-2 pr-4 text-forge-600">8.4e-5</td>
+                  <td class="py-2">tests/gpt2_e2e.rs</td>
+                </tr>
+                <tr class="border-b border-ink-100 dark:border-ink-800">
+                  <td class="py-2 pr-4">Forge ↔ HF transformers</td>
+                  <td class="py-2 pr-4 text-forge-600">1.75e-4</td>
+                  <td class="py-2">tests/gpt2_e2e.rs</td>
+                </tr>
+                <tr>
+                  <td class="py-2 pr-4">Every WGSL kernel ↔ CPU</td>
+                  <td class="py-2 pr-4 text-forge-600">≤ 1e-4</td>
+                  <td class="py-2">tests/op_parity.rs</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="mt-8 grid gap-5 sm:grid-cols-3">
+            <div class="card">
+              <h3 class="font-semibold">Identical greedy output</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Greedy continuations match token-for-token across CPU, WGPU, and
+                HF <code class="font-mono">transformers</code>.
+              </p>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">Gradients too</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Analytic gradients are checked against central differences, and
+                CPU ↔ WGPU gradient parity is a gate — not just the forward pass.
+              </p>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">41 tests, 9 suites</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Kernels, tokenizers, autograd, training ops, optimizer
+                convergence, KV-cache decode, streaming, and end-to-end GPT-2.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Kernels ─────────────────────────────────────────────────── -->
+      <section id="kernels" class="section">
+        <div class="wrap">
+          <h2 class="h2">23 WGSL kernels</h2>
+          <p class="lede">
+            The complete compute surface. Nothing here is generic — each kernel
+            exists because GPT-2 inference or training needs it.
+          </p>
+          <!-- Generated from shaders/ at build time by scripts/build_site.sh;
+               edit that script, not this list. -->
+          <div id="kernel-list" class="mt-8 grid gap-5 md:grid-cols-3">
+            <div class="card">
+              <h3 class="font-semibold">Forward — 15</h3>
+              <ul class="mt-3 flex flex-wrap gap-1.5 font-mono text-xs">
+                <li class="chip">add</li>
+                <li class="chip">dropout</li>
+                <li class="chip">embedding</li>
+                <li class="chip">gather_nll</li>
+                <li class="chip">gelu</li>
+                <li class="chip">kv_append</li>
+                <li class="chip">layernorm</li>
+                <li class="chip">matmul</li>
+                <li class="chip">merge_heads</li>
+                <li class="chip">scale</li>
+                <li class="chip">softmax</li>
+                <li class="chip">split_heads</li>
+                <li class="chip">sum_rows</li>
+                <li class="chip">unmerge_heads</li>
+                <li class="chip">unsplit_heads</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">Backward — 6</h3>
+              <ul class="mt-3 flex flex-wrap gap-1.5 font-mono text-xs">
+                <li class="chip">ce_bwd</li>
+                <li class="chip">gelu_bwd</li>
+                <li class="chip">layernorm_bwd_dp</li>
+                <li class="chip">layernorm_bwd_dx</li>
+                <li class="chip">scatter_add</li>
+                <li class="chip">softmax_bwd</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">Optimizer — 2</h3>
+              <ul class="mt-3 flex flex-wrap gap-1.5 font-mono text-xs">
+                <li class="chip">adamw</li>
+                <li class="chip">sumsq</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Quick start ─────────────────────────────────────────────── -->
+      <section id="quickstart" class="section">
+        <div class="wrap">
+          <h2 class="h2">Quick start</h2>
+          <p class="lede">
+            Rust edition 2024 and a Vulkan, Metal, or D3D12 driver. No Python,
+            no CUDA toolkit.
+          </p>
+
+          <div class="mt-8 grid gap-5 md:grid-cols-2">
+            <div class="card">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold">Generate with GPT-2 124M</h3>
+                <button class="btn-ghost text-xs" type="button" data-copy="cmd-generate">
+                  Copy
+                </button>
+              </div>
+              <div class="scroll-x mt-3">
+                <pre id="cmd-generate" class="font-mono text-xs leading-relaxed"># fetch weights + tokenizer
+./scripts/download_gpt2.sh
+
+cargo run --release --example generate -- \
+  --backend wgpu --prompt "Hello Forge!"</pre>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold">Train the demo model</h3>
+                <button class="btn-ghost text-xs" type="button" data-copy="cmd-train">
+                  Copy
+                </button>
+              </div>
+              <div class="scroll-x mt-3">
+                <pre id="cmd-train" class="font-mono text-xs leading-relaxed">./scripts/download_shakespeare.sh
+
+# nanoGPT shakespeare_char defaults:
+# 6L/6H/384d, 65-token vocab, 10.77M params
+cargo run --release --example train_shakespeare -- \
+  --backend wgpu</pre>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold">Browse models in the terminal</h3>
+                <button class="btn-ghost text-xs" type="button" data-copy="cmd-tui">
+                  Copy
+                </button>
+              </div>
+              <div class="scroll-x mt-3">
+                <pre id="cmd-tui" class="font-mono text-xs leading-relaxed"># forge-top: model browser + live dashboard
+# tokens/s, VRAM, GPU util, temperature, power
+cargo run --release --features tui \
+  --bin forge-top -- --path models/</pre>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold">Run this demo locally</h3>
+                <button class="btn-ghost text-xs" type="button" data-copy="cmd-web">
+                  Copy
+                </button>
+              </div>
+              <div class="scroll-x mt-3">
+                <pre id="cmd-web" class="font-mono text-xs leading-relaxed">./scripts/build_site.sh
+./scripts/serve_web.sh
+# plain static files — no COOP/COEP headers needed</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Roadmap ─────────────────────────────────────────────────── -->
+      <section id="roadmap" class="section">
+        <div class="wrap">
+          <h2 class="h2">Roadmap</h2>
+          <p class="lede">
+            Stages 1–11 are implemented and gated by tests. Stage 12 is
+            explicitly not a 1.0 requirement.
+          </p>
+
+          <ol class="mt-8 space-y-3">
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">1 ✓</span>
+              <strong class="font-semibold">Core types</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Shape, DType, Device, Error, Arc'd contiguous Tensor.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">2 ✓</span>
+              <strong class="font-semibold">CPU reference ops</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Plain Rust, unit-tested against hand-computed values.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">3 ✓</span>
+              <strong class="font-semibold">WebGPU runtime</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Adapter, device, queue, shader loader, pipeline cache.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">4 ✓</span>
+              <strong class="font-semibold">WGSL kernels</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Every kernel within 1e-4 of the CPU reference.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">5 ✓</span>
+              <strong class="font-semibold">Tokenizer &amp; serialization</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Byte-level BPE, character-level vocab, safetensors.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">6 ✓</span>
+              <strong class="font-semibold">GPT-2 inference</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Greedy and top-k sampling, weight-tied chunked LM head.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">7 ✓</span>
+              <strong class="font-semibold">KV-cache decode</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Token-identical to full recompute over ≥ 64 tokens.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">8 ✓</span>
+              <strong class="font-semibold">Autograd</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Tape-based reverse mode over the existing ops layer.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">9 ✓</span>
+              <strong class="font-semibold">Training modules</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Deterministic dropout, fused cross-entropy, AdamW.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">10 ✓</span>
+              <strong class="font-semibold">GPT-2 training</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Tiny Shakespeare from scratch, gradient accumulation,
+                checkpoints.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3">
+              <span class="font-mono text-xs text-forge-600">11 ✓</span>
+              <strong class="font-semibold">Browser deployment</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >wasm32 + WebGPU — the demo at the top of this page.</span
+              >
+            </li>
+            <li class="card flex flex-wrap items-baseline gap-x-3 opacity-70">
+              <span class="font-mono text-xs text-ink-500">12</span>
+              <strong class="font-semibold">Optimization</strong>
+              <span class="text-sm text-ink-500 dark:text-ink-300"
+                >Kernel fusion, buffer pooling, matmul tiling. Post-1.0.</span
+              >
+            </li>
+          </ol>
+        </div>
+      </section>
+    </main>
+
+    <footer class="border-t border-ink-100 py-10 dark:border-ink-800">
+      <div
+        class="wrap flex flex-wrap items-center justify-between gap-4 text-sm text-ink-500 dark:text-ink-300"
+      >
+        <p>Apache-2.0 licensed.</p>
+        <p class="flex gap-4">
+          <a class="hover:text-forge-600" href="https://github.com/Aisuko/forge" rel="noopener"
+            >Repository</a
+          >
+          <a
+            class="hover:text-forge-600"
+            href="https://github.com/Aisuko/forge/blob/main/docs/Forge_Roadmap_V4.md"
+            rel="noopener"
+            >Roadmap</a
+          >
+          <a
+            class="hover:text-forge-600"
+            href="https://github.com/Aisuko/forge/blob/main/LICENSE"
+            rel="noopener"
+            >License</a
+          >
+        </p>
+      </div>
+    </footer>
+
+    <!-- Modules are deferred by default, so neither blocks first paint. -->
+    <script type="module" src="./scene.js"></script>
+    <script type="module" src="./demo.js"></script>
+    <script type="module">
+      // Copy buttons — progressive enhancement, no dependency.
+      for (const btn of document.querySelectorAll("[data-copy]")) {
+        btn.addEventListener("click", async () => {
+          const el = document.getElementById(btn.dataset.copy);
+          try {
+            await navigator.clipboard.writeText(el.textContent.trim());
+            const was = btn.textContent;
+            btn.textContent = "Copied";
+            setTimeout(() => (btn.textContent = was), 1200);
+          } catch {
+            btn.textContent = "Press ⌘C";
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

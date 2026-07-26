@@ -1,8 +1,11 @@
-//! GPT-2 byte-level BPE tokenizer, implemented from scratch.
+//! Tokenizers: the GPT-2 byte-level BPE, and nanoGPT's character-level vocab.
 //!
-//! Loads the original `vocab.json` + `merges.txt`. The split pattern uses a
-//! negative lookahead, which the standard `regex` crate cannot express, so
-//! `fancy-regex` is used (see roadmap "Known Pitfalls").
+//! [`Gpt2Tokenizer`] loads the original `vocab.json` + `merges.txt`. The split
+//! pattern uses a negative lookahead, which the standard `regex` crate cannot
+//! express, so `fancy-regex` is used (see roadmap "Known Pitfalls").
+//!
+//! The generation path in [`crate::Gpt2`] is generic over the [`Tokenizer`]
+//! trait, so [`CharTokenizer`] plugs into it unchanged.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,8 +13,24 @@ use std::sync::Mutex;
 
 use crate::error::{ForgeError, Result};
 
+// `self::` is required: a bare `char` path would resolve as a crate name.
+pub mod char;
+pub use self::char::CharTokenizer;
+
 const SPLIT_PATTERN: &str =
     r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
+
+/// The tokenizer surface the generation path needs — exactly the four methods
+/// [`crate::Gpt2::generate`] and friends call.
+pub trait Tokenizer {
+    fn encode(&self, text: &str) -> Result<Vec<u32>>;
+    fn decode(&self, ids: &[u32]) -> String;
+    /// Raw byte-level decode. Must be append-only per token — i.e. `decode_bytes(a ++ b)`
+    /// equals `decode_bytes(a) ++ decode_bytes(b)` — because the streaming path
+    /// emits only the valid-UTF-8 prefix of the accumulated bytes.
+    fn decode_bytes(&self, ids: &[u32]) -> Vec<u8>;
+    fn vocab_size(&self) -> usize;
+}
 
 pub struct Gpt2Tokenizer {
     encoder: HashMap<String, u32>,
@@ -161,6 +180,94 @@ impl Gpt2Tokenizer {
             .unwrap()
             .insert(word.to_string(), parts.clone());
         parts
+    }
+}
+
+/// Delegates to the inherent methods, which stay public so existing callers
+/// compile unchanged (inherent methods win over trait methods at the call
+/// site, so this is not recursive).
+impl Tokenizer for Gpt2Tokenizer {
+    fn encode(&self, text: &str) -> Result<Vec<u32>> {
+        Gpt2Tokenizer::encode(self, text)
+    }
+
+    fn decode(&self, ids: &[u32]) -> String {
+        Gpt2Tokenizer::decode(self, ids)
+    }
+
+    fn decode_bytes(&self, ids: &[u32]) -> Vec<u8> {
+        Gpt2Tokenizer::decode_bytes(self, ids)
+    }
+
+    fn vocab_size(&self) -> usize {
+        Gpt2Tokenizer::vocab_size(self)
+    }
+}
+
+/// Either tokenizer, for callers that pick one at runtime (the TUI and the
+/// wasm facade both do). Generation stays generic over `impl Tokenizer`, so
+/// this dispatches without a vtable.
+pub enum AnyTokenizer {
+    /// Boxed because a `Gpt2Tokenizer` (four hash maps plus a compiled regex)
+    /// is ~6× the size of a `CharTokenizer`, and every value of this enum
+    /// would otherwise pay for the larger one.
+    Bpe(Box<Gpt2Tokenizer>),
+    Char(CharTokenizer),
+}
+
+impl AnyTokenizer {
+    pub fn bpe(t: Gpt2Tokenizer) -> Self {
+        AnyTokenizer::Bpe(Box::new(t))
+    }
+
+    /// Load whichever tokenizer `dir` holds: BPE when `merges.txt` is present
+    /// alongside `vocab.json`, otherwise the character vocab.
+    pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self> {
+        let dir = dir.as_ref();
+        if dir.join("merges.txt").exists() {
+            Ok(AnyTokenizer::bpe(Gpt2Tokenizer::from_dir(dir)?))
+        } else {
+            Ok(AnyTokenizer::Char(CharTokenizer::from_json(
+                &std::fs::read_to_string(dir.join("vocab.json"))?,
+            )?))
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            AnyTokenizer::Bpe(_) => "bpe",
+            AnyTokenizer::Char(_) => "char",
+        }
+    }
+}
+
+impl Tokenizer for AnyTokenizer {
+    fn encode(&self, text: &str) -> Result<Vec<u32>> {
+        match self {
+            AnyTokenizer::Bpe(t) => t.encode(text),
+            AnyTokenizer::Char(t) => t.encode(text),
+        }
+    }
+
+    fn decode(&self, ids: &[u32]) -> String {
+        match self {
+            AnyTokenizer::Bpe(t) => t.decode(ids),
+            AnyTokenizer::Char(t) => t.decode(ids),
+        }
+    }
+
+    fn decode_bytes(&self, ids: &[u32]) -> Vec<u8> {
+        match self {
+            AnyTokenizer::Bpe(t) => t.decode_bytes(ids),
+            AnyTokenizer::Char(t) => t.decode_bytes(ids),
+        }
+    }
+
+    fn vocab_size(&self) -> usize {
+        match self {
+            AnyTokenizer::Bpe(t) => t.vocab_size(),
+            AnyTokenizer::Char(t) => t.vocab_size(),
+        }
     }
 }
 

@@ -77,7 +77,10 @@ fn grads_parity_cpu_wgpu() {
 
     let (cl, cg) = cpu_model.loss_grads(&INPUT, &TARGET, 0.0, 0).unwrap();
     let (gl, gg) = gpu_model.loss_grads(&INPUT, &TARGET, 0.0, 0).unwrap();
-    assert!((cl - gl).abs() <= 1e-4, "loss diverged: cpu {cl} vs wgpu {gl}");
+    assert!(
+        (cl - gl).abs() <= 1e-4,
+        "loss diverged: cpu {cl} vs wgpu {gl}"
+    );
 
     let specs = cpu_model.param_specs();
     for ((name, _), (c, g)) in specs.iter().zip(cg.iter().zip(&gg)) {

@@ -63,6 +63,9 @@ fn kv_cache_matches_nocache() {
             tok.decode(&nocache),
             tok.decode(&cached),
         );
-        println!("greedy ({N_TOKENS} tokens) identical: {:?}", tok.decode(&cached));
+        println!(
+            "greedy ({N_TOKENS} tokens) identical: {:?}",
+            tok.decode(&cached)
+        );
     }
 }

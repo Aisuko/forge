@@ -385,12 +385,7 @@ pub fn scatter_add_rows(
     );
 }
 
-pub fn gather_nll(
-    probs: &WgpuStorage,
-    ids: &WgpuStorage,
-    rows: usize,
-    cols: usize,
-) -> WgpuStorage {
+pub fn gather_nll(probs: &WgpuStorage, ids: &WgpuStorage, rows: usize, cols: usize) -> WgpuStorage {
     let out = alloc(&probs.ctx, rows);
     probs.ctx.dispatch(
         "gather_nll",

@@ -157,7 +157,9 @@ fn cross_entropy_parity_and_reference() {
     let gpu = wgpu_device();
     let (rows, cols) = (13usize, 97usize);
     let logits = rand_vec(&mut rng, rows * cols);
-    let ids: Vec<u32> = (0..rows).map(|_| rng.random_range(0..cols as u32)).collect();
+    let ids: Vec<u32> = (0..rows)
+        .map(|_| rng.random_range(0..cols as u32))
+        .collect();
     let run = |dev: &Device| {
         let lt = Tensor::from_f32(&logits, [rows, cols], dev).unwrap();
         let it = Tensor::from_u32(&ids, [rows], dev).unwrap();
