@@ -29,6 +29,57 @@ function explain(title, body, retry) {
   }
 }
 
+// ── The 3D stack ──────────────────────────────────────────────────────────
+// Separate from the WebGPU check on purpose: WebGL and WebGPU fail
+// independently, and either one missing must still leave a complete page.
+
+let scenePromise = null;
+
+/** Start the scene at most once; resolves to the controller or null. */
+function ensureScene() {
+  scenePromise = scenePromise || startScene();
+  return scenePromise;
+}
+
+async function startScene() {
+  const canvas = $("scene");
+  if (!canvas) return null;
+  try {
+    // three.js is 751 KB and lives behind this call, so it is fetched when
+    // the section is reached rather than on first paint.
+    const { createStack } = await import("./scene.js");
+    return createStack({ canvas, label: $("scene-label") });
+  } catch (e) {
+    // No WebGL, or the module itself failed to load. Drop the canvas
+    // entirely — an empty rectangle is worse than no rectangle — and open
+    // the text architecture, which says the same thing in words.
+    console.warn("3D stack unavailable:", e);
+    $("scene-card")?.remove();
+    $("demo-grid")?.classList.remove("md:grid-cols-2");
+    const text = $("stack-text");
+    if (text) text.open = true;
+    return null;
+  }
+}
+
+const section = $("demo");
+if (section && "IntersectionObserver" in window) {
+  const io = new IntersectionObserver(
+    (entries, obs) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        obs.disconnect();
+        ensureScene();
+      }
+    },
+    { rootMargin: "200px" },
+  );
+  io.observe(section);
+} else {
+  ensureScene();
+}
+
+// ── The demo itself ───────────────────────────────────────────────────────
+
 if (!("gpu" in navigator)) {
   explain(
     "WebGPU is not available in this browser",
@@ -139,6 +190,17 @@ function wire() {
       }
       if (!checkCharset()) return;
 
+      // The visualization must describe the model that is running, not the
+      // defaults it was built with.
+      const scene = await ensureScene();
+      scene?.setConfig({
+        nLayer: model.n_layer(),
+        nHead: model.n_head(),
+        nEmbd: model.n_embd(),
+        nCtx: model.n_ctx(),
+      });
+      scene?.reset();
+
       $("demo-output").textContent = "";
       $("demo-stop").hidden = false;
       stop = false;
@@ -150,24 +212,33 @@ function wire() {
       let count = 0;
       let first = null;
 
-      await model.generate(
+      const onText = (s) => {
+        // Returning false stops generation after the current token.
+        if (stop) return false;
+        if (first === null) first = performance.now();
+        count += 1;
+        $("demo-output").textContent += s;
+        const dt = (performance.now() - first) / 1000;
+        if (dt > 0) {
+          status(`generating — ${(count / dt).toFixed(1)} tok/s`);
+        }
+      };
+      const args = [
         $("demo-prompt").value,
         n,
         topk,
         0.8,
         BigInt(Date.now() % 100000),
-        (s) => {
-          // Returning false stops generation after the current token.
-          if (stop) return false;
-          if (first === null) first = performance.now();
-          count += 1;
-          $("demo-output").textContent += s;
-          const dt = (performance.now() - first) / 1000;
-          if (dt > 0) {
-            status(`generating — ${(count / dt).toFixed(1)} tok/s`);
-          }
-        },
-      );
+        onText,
+      ];
+
+      // Text generation never depends on the 3D view: without it the plain
+      // path runs, and it does no attention readback at all.
+      await (scene
+        ? model.generate_with_attention(...args, (layer, nHead, weights) =>
+            scene.pushAttention(layer, nHead, weights),
+          )
+        : model.generate(...args));
 
       const dt = (performance.now() - t0) / 1000;
       const decode = first === null ? dt : (performance.now() - first) / 1000;
