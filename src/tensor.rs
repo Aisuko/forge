@@ -175,6 +175,51 @@ impl Tensor {
         }
     }
 
+    /// Read several f32 tensors back in one GPU round trip, in the order
+    /// given.
+    ///
+    /// [`Tensor::to_vec_f32_async`] is a submit and a fence wait per call, so
+    /// a step that wants several small tensors — the attention probe reads
+    /// `n_layer + 1` per generated token — pays for the round trips, not the
+    /// bytes. Every tensor must be on the same device.
+    pub async fn to_vec_f32_batch(tensors: &[Tensor]) -> Result<Vec<Vec<f32>>> {
+        let mixed = || ForgeError::Shape("to_vec_f32_batch needs one device".into());
+        let mut ctx: Option<&Arc<WgpuContext>> = None;
+        for t in tensors {
+            if t.dtype != DType::F32 {
+                return Err(ForgeError::Shape("to_vec_f32 on non-f32 tensor".into()));
+            }
+            if let Storage::Wgpu(s) = &t.storage {
+                match ctx {
+                    None => ctx = Some(&s.ctx),
+                    Some(c) if Arc::ptr_eq(c, &s.ctx) => {}
+                    Some(_) => return Err(mixed()),
+                }
+            }
+        }
+        let Some(ctx) = ctx else {
+            // All host-side: nothing to stage, and no round trip to save.
+            return tensors.iter().map(Tensor::to_vec_f32).collect();
+        };
+        let mut regions = Vec::with_capacity(tensors.len());
+        for t in tensors {
+            match &t.storage {
+                Storage::Wgpu(s) => {
+                    regions.push((s.buf.as_ref(), s.offset * 4, t.shape.numel() * 4))
+                }
+                // A host tensor has nothing to stage, so a mixed batch would
+                // misalign the results with their inputs.
+                Storage::Cpu(_) => return Err(mixed()),
+            }
+        }
+        Ok(ctx
+            .readback_many_async(&regions)
+            .await?
+            .iter()
+            .map(|b| bytemuck::pod_collect_to_vec(b))
+            .collect())
+    }
+
     pub async fn to_vec_u32_async(&self) -> Result<Vec<u32>> {
         if self.dtype != DType::U32 {
             return Err(ForgeError::Shape("to_vec_u32 on non-u32 tensor".into()));

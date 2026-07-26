@@ -22,7 +22,7 @@ pub mod wasm;
 pub use device::Device;
 pub use dtype::DType;
 pub use error::{ForgeError, Result};
-pub use models::gpt2::{Gpt2, Gpt2Config, KvCache, Sampling};
+pub use models::gpt2::{AttnStep, Gpt2, Gpt2Config, KvCache, Sampling};
 pub use shape::Shape;
 pub use tensor::Tensor;
 pub use tokenizer::{AnyTokenizer, CharTokenizer, Gpt2Tokenizer, Tokenizer};

@@ -44,6 +44,11 @@ sysinfo = { version = "0.39", optional = true }
 nvml-wrapper = { version = "0.12", optional = true }
 memmap2 = { version = "0.9", optional = true }
 
+# Native only: the integration tests exercise the async inference API — the
+# path the browser actually takes — so they need a blocking executor.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster = "0.4"
+
 # Browser (wasm32): async-only device APIs + JS bindings.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
