@@ -111,6 +111,24 @@ pub enum Sampling {
     },
 }
 
+/// One block's attention probabilities for one decode step, read back from
+/// the device.
+///
+/// `probs` is the row-major `[n_head, q_len, kv_len]` tensor the model
+/// actually attended with — captured after the softmax, not recomputed — so a
+/// visualization built from it shows the same arithmetic that produced the
+/// text. `ops::softmax` is out-of-place, so capturing it perturbs nothing.
+#[derive(Debug, Clone)]
+pub struct AttnStep {
+    pub layer: usize,
+    pub n_head: usize,
+    /// Query positions in this step: the whole prompt on prefill, 1 per decode.
+    pub q_len: usize,
+    /// Past positions attended to, including the queries themselves.
+    pub kv_len: usize,
+    pub probs: Vec<f32>,
+}
+
 /// Preallocated per-layer K/V tensors (`[n_head, n_ctx, head_dim]`) for
 /// incremental decode. `len` positions are filled; new tokens append.
 pub struct KvCache {
@@ -251,6 +269,10 @@ impl Gpt2 {
 
     /// Attention over new tokens only, appending their K/V to the cache and
     /// attending to all `len + t` cached positions.
+    ///
+    /// `probe`, when present, collects the post-softmax probabilities — an
+    /// `Arc` handle to a tensor that is computed regardless, so the probing
+    /// and non-probing paths run identical arithmetic.
     fn attention_cached(
         &self,
         block: &Block,
@@ -258,6 +280,7 @@ impl Gpt2 {
         k_cache: &mut Tensor,
         v_cache: &mut Tensor,
         len: usize,
+        probe: Option<&mut Vec<Tensor>>,
     ) -> Result<Tensor> {
         let n_head = self.config.n_head;
         let hd = self.config.n_embd / n_head;
@@ -279,6 +302,9 @@ impl Gpt2 {
             },
         )?; // [h, t, kv_len]
         let att = ops::softmax(&att, true, len)?; // off = kv_len - t
+        if let Some(probe) = probe {
+            probe.push(att.clone());
+        }
         let y = ops::matmul(
             &att,
             v_cache,
@@ -320,8 +346,14 @@ impl Gpt2 {
     }
 
     /// Hidden states for `ids` (new tokens) continuing from `cache`;
-    /// appends their K/V and advances `cache.len`.
-    fn hidden_cached(&self, ids: &[u32], cache: &mut KvCache) -> Result<Tensor> {
+    /// appends their K/V and advances `cache.len`. `probe` is threaded through
+    /// to [`Gpt2::attention_cached`] and collects one tensor per block.
+    fn hidden_cached(
+        &self,
+        ids: &[u32],
+        cache: &mut KvCache,
+        mut probe: Option<&mut Vec<Tensor>>,
+    ) -> Result<Tensor> {
         if ids.is_empty() {
             return Err(ForgeError::Shape("empty token sequence".into()));
         }
@@ -342,7 +374,14 @@ impl Gpt2 {
             .iter()
             .zip(cache.k.iter_mut().zip(cache.v.iter_mut()))
         {
-            let attn_out = self.attention_cached(block, &block.ln_1.forward(&x)?, kc, vc, pos)?;
+            let attn_out = self.attention_cached(
+                block,
+                &block.ln_1.forward(&x)?,
+                kc,
+                vc,
+                pos,
+                probe.as_deref_mut(),
+            )?;
             x = ops::add(&x, &attn_out)?;
             let mlp_in = block.ln_2.forward(&x)?;
             let mlp_out = block
@@ -386,7 +425,7 @@ impl Gpt2 {
     /// Last-position logits for `ids` continuing from `cache` (incremental
     /// decode: pass the full prompt once, then one token at a time).
     pub fn logits_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
-        let h = self.hidden_cached(ids, cache)?;
+        let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
     }
@@ -394,11 +433,56 @@ impl Gpt2 {
     /// Async form of [`Gpt2::logits_step`] — identical math; the readback is
     /// awaited so it works on wasm32 (roadmap v4, pitfall 14).
     pub async fn logits_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
-        let h = self.hidden_cached(ids, cache)?;
+        let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?
             .to_vec_f32_async()
             .await
+    }
+
+    /// [`Gpt2::logits_step_async`] plus every block's attention probabilities
+    /// for this step, in layer order.
+    ///
+    /// The logits are identical to `logits_step_async` — the probe only reads
+    /// tensors the step computes anyway. The whole step is enqueued first, and
+    /// the logits and every block's attention come back in a *single* batched
+    /// readback: one at a time they cost ~2.7x the decode itself, since the
+    /// price is the round trip rather than the ~36 KB.
+    pub async fn logits_step_attn_async(
+        &self,
+        ids: &[u32],
+        cache: &mut KvCache,
+    ) -> Result<(Vec<f32>, Vec<AttnStep>)> {
+        let mut probe = Vec::with_capacity(self.config.n_layer + 1);
+        let h = self.hidden_cached(ids, cache, Some(&mut probe))?;
+        let last = h.narrow_rows(ids.len() - 1, 1)?;
+        // Logits last, so `probe` stays in layer order and the shapes below
+        // line up with the tensors that produced them.
+        let shapes: Vec<Vec<usize>> = probe.iter().map(|t| t.shape().dims().to_vec()).collect();
+        probe.push(ops::matmul_chunked_transb(
+            &last,
+            &self.emb.wte_chunks,
+            1.0,
+        )?);
+
+        let mut read = Tensor::to_vec_f32_batch(&probe).await?;
+        let logits = read.pop().expect("logits were pushed last");
+        let mut steps = Vec::with_capacity(read.len());
+        for (layer, (probs, dims)) in read.into_iter().zip(shapes).enumerate() {
+            let [n_head, q_len, kv_len] = dims[..] else {
+                return Err(ForgeError::Shape(format!(
+                    "attention probe expected rank 3, got {dims:?}"
+                )));
+            };
+            steps.push(AttnStep {
+                layer,
+                n_head,
+                q_len,
+                kv_len,
+                probs,
+            });
+        }
+        Ok((logits, steps))
     }
 
     // ---- training (roadmap v4, Stages 8-10) ----
@@ -849,7 +933,37 @@ impl Gpt2 {
         prompt: &str,
         max_new_tokens: usize,
         sampling: Sampling,
+        on_text: impl FnMut(&str) -> ControlFlow<()>,
+    ) -> Result<String> {
+        // `None` turns off the probe entirely: no capture, no readback, and
+        // the same `logits_step_async` this method has always called.
+        self.generate_async_probe(
+            tokenizer,
+            prompt,
+            max_new_tokens,
+            sampling,
+            on_text,
+            None::<fn(&[AttnStep])>,
+        )
+        .await
+    }
+
+    /// [`Gpt2::generate_async_ctl`] with an optional attention probe:
+    /// `on_attn`, when present, fires once per decode step with every block's
+    /// attention probabilities — including the prompt prefill, whose `q_len`
+    /// is the prompt length rather than 1.
+    ///
+    /// Opt-in because it costs one readback per block per token. Passing
+    /// `None` is exactly the non-probing path; the generated text is identical
+    /// either way, since the probe reads tensors the step already computed.
+    pub async fn generate_async_probe(
+        &self,
+        tokenizer: &impl Tokenizer,
+        prompt: &str,
+        max_new_tokens: usize,
+        sampling: Sampling,
         mut on_text: impl FnMut(&str) -> ControlFlow<()>,
+        mut on_attn: Option<impl FnMut(&[AttnStep])>,
     ) -> Result<String> {
         // The streaming helper takes a plain sink, so the break request is
         // captured here and checked once the delta has been forwarded. A Cell
@@ -869,7 +983,7 @@ impl Gpt2 {
             Sampling::Greedy => None,
         };
         let mut cache = self.new_cache()?;
-        let mut logits = self.logits_step_async(&ids, &mut cache).await?; // prompt prefill
+        let mut logits = self.step_async(&ids, &mut cache, &mut on_attn).await?; // prompt prefill
         // Stream over the raw byte-level decode (append-only per token),
         // emitting only its valid-UTF-8 prefix: a multi-byte character split
         // across BPE tokens is held back until its trailing bytes arrive.
@@ -889,9 +1003,26 @@ impl Gpt2 {
             if ids.len() >= self.config.n_ctx {
                 break;
             }
-            logits = self.logits_step_async(&[next], &mut cache).await?; // single-token decode
+            logits = self.step_async(&[next], &mut cache, &mut on_attn).await?; // single-token decode
         }
         Ok(tokenizer.decode(&ids))
+    }
+
+    /// One decode step, forwarding attention to `on_attn` when probing.
+    async fn step_async(
+        &self,
+        ids: &[u32],
+        cache: &mut KvCache,
+        on_attn: &mut Option<impl FnMut(&[AttnStep])>,
+    ) -> Result<Vec<f32>> {
+        match on_attn {
+            Some(f) => {
+                let (logits, steps) = self.logits_step_attn_async(ids, cache).await?;
+                f(&steps);
+                Ok(logits)
+            }
+            None => self.logits_step_async(ids, cache).await,
+        }
     }
 }
 

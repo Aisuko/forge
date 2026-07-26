@@ -235,6 +235,66 @@ impl WgpuContext {
         Ok(out)
     }
 
+    /// Read several regions back in one submit and one fence wait.
+    ///
+    /// [`WgpuContext::readback_async`] costs a submit and a wait *each*, which
+    /// dominates when a single logical step wants several small tensors: the
+    /// attention probe reads `n_layer + 1` per generated token, and one at a
+    /// time that cost more than the decode itself. Staged into one encoder
+    /// they cost one round trip regardless of how many there are.
+    ///
+    /// Regions are returned in the order given.
+    pub async fn readback_many_async(
+        &self,
+        regions: &[(&wgpu::Buffer, usize, usize)],
+    ) -> Result<Vec<Vec<u8>>> {
+        if regions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let staging: Vec<wgpu::Buffer> = regions
+            .iter()
+            .map(|(buf, offset_bytes, size_bytes)| {
+                let s = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: *size_bytes as u64,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                encoder.copy_buffer_to_buffer(buf, *offset_bytes as u64, &s, 0, *size_bytes as u64);
+                s
+            })
+            .collect();
+        self.queue.submit([encoder.finish()]);
+
+        // Every map request is issued before anything is awaited, so one poll
+        // services all of them.
+        let waits: Vec<_> = staging
+            .iter()
+            .map(|s| {
+                let (tx, rx) = oneshot::channel();
+                s.slice(..)
+                    .map_async(wgpu::MapMode::Read, move |r| tx.send(r));
+                rx
+            })
+            .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.device
+            .poll(wgpu::PollType::Wait)
+            .map_err(|e| ForgeError::Wgpu(format!("poll: {e:?}")))?;
+        #[cfg(target_arch = "wasm32")]
+        let _ = self.device.poll(wgpu::PollType::Poll);
+
+        let mut out = Vec::with_capacity(regions.len());
+        for (rx, s) in waits.into_iter().zip(&staging) {
+            rx.await
+                .map_err(|e| ForgeError::Wgpu(format!("map_async: {e:?}")))?;
+            out.push(s.slice(..).get_mapped_range().to_vec());
+            s.unmap();
+        }
+        Ok(out)
+    }
+
     /// Dispatch `name` with binding 0 = `params` (uniform, raw words) and
     /// bindings 1.. = `buffers` (storage). Each buffer entry is
     /// (buffer, offset_bytes, size_bytes).
