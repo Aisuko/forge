@@ -5,7 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::Device;
-use crate::models::gpt2::{Gpt2, Gpt2Config, Sampling};
+use crate::models::gpt2::{AttnStep, Gpt2, Gpt2Config, Sampling};
 use crate::tokenizer::{AnyTokenizer, CharTokenizer, Gpt2Tokenizer, Tokenizer as _};
 
 #[wasm_bindgen(start)]
@@ -80,6 +80,24 @@ impl WasmGpt2 {
         self.tokenizer.vocab_size()
     }
 
+    // The page's architecture view is sized from the model it is actually
+    // running, not from GPT-2 124M constants baked into JavaScript.
+    pub fn n_layer(&self) -> usize {
+        self.model.config.n_layer
+    }
+
+    pub fn n_head(&self) -> usize {
+        self.model.config.n_head
+    }
+
+    pub fn n_embd(&self) -> usize {
+        self.model.config.n_embd
+    }
+
+    pub fn n_ctx(&self) -> usize {
+        self.model.config.n_ctx
+    }
+
     /// Characters of `prompt` this model's vocabulary cannot represent,
     /// deduplicated. Empty when the prompt is fine. The char model knows only
     /// 65 characters, so the page checks before generating rather than
@@ -128,6 +146,73 @@ impl WasmGpt2 {
                     _ => std::ops::ControlFlow::Continue(()),
                 }
             })
+            .await
+            .map_err(js_err)
+    }
+
+    /// [`WasmGpt2::generate`] plus a live attention feed: after every token,
+    /// `on_attn(layer, n_head, weights)` fires once per block with that
+    /// block's attention probabilities as a `Float32Array` of
+    /// `n_head * kv_len` — head-major, so `kv_len` is `weights.length /
+    /// n_head`, and `weights[h * kv_len + p]` is how much head `h` weighted
+    /// position `p` when producing this token.
+    ///
+    /// Only the newest query row is sent: on the prompt prefill the model
+    /// attends with every prompt position at once, but the row that produced
+    /// the next token is the last one.
+    ///
+    /// Opt-in — `generate` does no attention readback at all.
+    pub async fn generate_with_attention(
+        &self,
+        prompt: &str,
+        max_new_tokens: usize,
+        top_k: usize,
+        temperature: f32,
+        seed: u64,
+        on_text: &js_sys::Function,
+        on_attn: &js_sys::Function,
+    ) -> Result<String, JsValue> {
+        let sampling = if top_k == 0 {
+            Sampling::Greedy
+        } else {
+            Sampling::TopK {
+                k: top_k,
+                temperature,
+                seed,
+            }
+        };
+        let this = JsValue::NULL;
+        self.model
+            .generate_async_probe(
+                &self.tokenizer,
+                prompt,
+                max_new_tokens,
+                sampling,
+                |s| match on_text.call1(&this, &JsValue::from_str(s)) {
+                    Ok(v) if v.is_falsy() && !v.is_undefined() && !v.is_null() => {
+                        std::ops::ControlFlow::Break(())
+                    }
+                    _ => std::ops::ControlFlow::Continue(()),
+                },
+                Some(|steps: &[AttnStep]| {
+                    for s in steps {
+                        let last = (s.q_len - 1) * s.kv_len;
+                        let mut row = Vec::with_capacity(s.n_head * s.kv_len);
+                        for head in 0..s.n_head {
+                            let base = head * s.q_len * s.kv_len + last;
+                            row.extend_from_slice(&s.probs[base..base + s.kv_len]);
+                        }
+                        // A failing visualization callback must not abort
+                        // generation; the text is the point.
+                        let _ = on_attn.call3(
+                            &this,
+                            &JsValue::from_f64(s.layer as f64),
+                            &JsValue::from_f64(s.n_head as f64),
+                            &js_sys::Float32Array::from(&row[..]),
+                        );
+                    }
+                }),
+            )
             .await
             .map_err(js_err)
     }
