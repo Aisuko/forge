@@ -30,7 +30,9 @@
 	// Vulkan loader + software fallback; scripts/setup_nvidia_vulkan.sh adds
 	// the NVIDIA ICD manifest, the GLVND EGL vendor manifest, the modeset
 	// node, and fixes /dev/dri permissions.
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 && bash scripts/setup_nvidia_vulkan.sh || true",
+	// install_hooks.sh points core.hooksPath at .githooks/ — the local CI gate
+	// (see scripts/ci_local.sh). git does not wire that up per clone on its own.
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 && bash scripts/install_hooks.sh; bash scripts/setup_nvidia_vulkan.sh || true",
 	// /dev/dri is re-mounted with the host's restrictive perms on every
 	// container start (not just creation), so the DAC/GLVND fixes need to
 	// re-run on every start too, not only once via postCreateCommand.

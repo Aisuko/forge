@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fast local CI gate: fmt, clippy, the wasm32 and forge-top builds, and the TUI
+# dependency-leak assert. About 6s with a warm target/.
+#
+# The release test suite runs on pre-push instead (see .githooks/pre-push) —
+# it takes about a minute, too slow to pay on every WIP commit or --amend.
+#
+# Activated by scripts/install_hooks.sh, which points core.hooksPath here.
+# Bypass with `git commit --no-verify`.
+set -euo pipefail
+
+# This gate checks the working tree, not the staged snapshot, so a partially
+# staged change can commit a state that was never checked on its own.
+if ! git diff --quiet; then
+  printf '\033[33mnote:\033[0m unstaged changes present — this gate checks the working tree, not the index\n' >&2
+fi
+
+exec ./scripts/ci_local.sh fast

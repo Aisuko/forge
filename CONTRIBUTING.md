@@ -75,6 +75,10 @@ add a new op, add it to both backends and add a parity case.
 ## Environment setup
 
 ```bash
+# One-time: activate the local CI hooks (see "The local CI gate" below).
+# Already run for you in the devcontainer.
+./scripts/install_hooks.sh
+
 # Fetch GPT-2 124M weights + tokenizer into models/gpt2/
 # (reads HF_TOKEN from .env if set; gpt2 is public so this is optional)
 ./scripts/download_gpt2.sh
@@ -88,6 +92,51 @@ On Linux, the WGPU backend needs a working Vulkan ICD. See
 you're running in a container with an NVIDIA GPU and `wgpu::Device`
 initialization fails to find a hardware adapter (falls back to software
 rendering via Mesa's llvmpipe otherwise, which works but is slow).
+
+## The local CI gate
+
+Verification runs on your machine, in git hooks, rather than on GitHub. The
+only remaining workflow that runs automatically is the Pages deploy
+(`.github/workflows/pages.yml`); `.github/workflows/ci.yml` is dispatch-only,
+kept for pull requests from forks where nobody's hooks ran.
+
+The reason is that the GitHub runners were verifying strictly less than a
+developer machine can. They have no GPU, so every WGPU test ran against Mesa's
+software Vulkan driver, and they don't have the gitignored 548 MB
+`models/gpt2/`, so `gpt2_e2e` and `kv_cache` — the suites that check real
+GPT-2 numerics against HF `transformers` — were skipped entirely. The pre-push
+hook runs both, on real hardware.
+
+`scripts/ci_local.sh` is the single source of truth for what "green" means,
+and both hooks are thin wrappers around it:
+
+| stage | checks | cost (warm `target/`) | hook |
+| --- | --- | --- | --- |
+| `fast` | `cargo fmt --check`, `cargo clippy -D warnings`, wasm32 build, `forge-top` build, TUI dependency-leak assert | ~6s | `pre-commit` |
+| `full` | everything in `fast`, plus `cargo test --release --locked` (all suites) | ~1m10s | `pre-push` |
+
+Stages are ordered cheapest-first and stop at the first failure, so a
+formatting slip doesn't cost you a minute of GPU tests. Run either by hand:
+
+```bash
+./scripts/ci_local.sh fast
+./scripts/ci_local.sh full
+```
+
+`full` deliberately repeats the `fast` checks — a push can carry commits made
+with `--no-verify`, or fetched from another machine.
+
+Two things worth knowing:
+
+- **Activation is per clone.** git ignores `.githooks/` until
+  `core.hooksPath` points at it, which is what `./scripts/install_hooks.sh`
+  does. Undo with `git config --unset core.hooksPath`.
+- **`pre-commit` checks the working tree, not the index.** With a partially
+  staged change it verifies a different state than the one being committed,
+  and warns when it notices unstaged changes. `pre-push` has no such gap.
+
+To commit or push a knowingly-broken WIP state, bypass with
+`git commit --no-verify` / `git push --no-verify`.
 
 ## Testing
 
@@ -165,7 +214,7 @@ If you're touching the browser/wasm path, build and serve the demo:
 2. If you add or modify an op: implement it in `backend/cpu.rs`, add/update
    the matching WGSL kernel in `shaders/`, wire it through `ops.rs`, and add
    a parity case in `tests/op_parity.rs`.
-3. Run `cargo test --release` and, if relevant, the manual CPU/WGPU
-   generation comparison above.
+3. Run `./scripts/ci_local.sh full` (or just let the `pre-push` hook do it)
+   and, if relevant, the manual CPU/WGPU generation comparison above.
 4. Keep changes scoped to what GPT-2 needs — this project deliberately
    avoids generality for its own sake.
