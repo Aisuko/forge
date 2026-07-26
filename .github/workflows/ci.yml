@@ -1,16 +1,25 @@
-name: CI
+name: CI (manual)
 
+# The primary gate for this repo is local, not here: .githooks/pre-commit runs
+# fmt/clippy/builds and .githooks/pre-push runs the full release test suite
+# before anything is pushed. See scripts/ci_local.sh, which both hooks and the
+# jobs below invoke, and CONTRIBUTING.md for the one-time install.
+#
+# This workflow therefore has no push or pull_request trigger — it only runs on
+# manual dispatch. It is kept for the one case the local hooks cannot cover:
+# a pull request from a fork, where nobody's pre-push hook ran on the code.
+#
 # Scope note: GitHub-hosted runners have no NVIDIA GPU. The WGPU-backed tests
 # below therefore execute against Mesa's software Vulkan driver (lavapipe),
-# which exercises the real WGSL kernel path but not real GPU hardware.
-# GPU-backed parity — the published CPU<->WGPU max logit diff of 8.4e-5 and the
-# Forge<->HF transformers diff of 1.75e-4 — is verified locally on an NVIDIA
-# RTX A5000, not in CI. See scripts/setup_nvidia_vulkan.sh.
+# which exercises the real WGSL kernel path but not real GPU hardware. Runners
+# also lack the gitignored 548 MB models/gpt2/, so gpt2_e2e and kv_cache are
+# excluded here. Both gaps are covered by the pre-push hook on a machine with
+# an NVIDIA RTX A5000 and the weights present — the published CPU<->WGPU max
+# logit diff of 8.4e-5 and the Forge<->HF transformers diff of 1.75e-4 come
+# from there. See scripts/setup_nvidia_vulkan.sh.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -79,6 +88,7 @@ jobs:
 
       # The TUI deps must never reach the library's dependents or the wasm
       # build; they are optional, behind the `tui` feature, for that reason.
+      # Kept in sync with assert_no_tui_deps in scripts/ci_local.sh.
       - name: Assert the default build pulls no TUI dependencies
         run: |
           for dep in ratatui crossterm sysinfo nvml-wrapper memmap2; do
