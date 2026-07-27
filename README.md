@@ -62,9 +62,3 @@ for NVIDIA inside a container. Check with `cargo run --release --example wgpu_pr
 ## License
 
 GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
-
-## More
-
-[docs/Forge_Roadmap_V4.md](docs/Forge_Roadmap_V4.md) ·
-[CONTRIBUTING.md](CONTRIBUTING.md) ·
-[aisuko.github.io/forge](https://aisuko.github.io/forge/)
