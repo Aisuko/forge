@@ -44,5 +44,8 @@ target/
 # Site build output and the downloaded Tailwind CLI.
 /docs/dist/
 /.cache/
+
+# Local planning notes, not for the public repo.
+/plan/
 Cargo.lock
 references/
