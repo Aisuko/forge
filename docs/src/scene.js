@@ -40,6 +40,11 @@ export const DEFAULT_CONFIG = {
   nHead: 6,
   nEmbd: 384,
   nCtx: 256,
+  // What this stack's first slab is called, counting blocks from 1 the way
+  // the page does. The explainer draws block 1 in full, so the folded
+  // remainder starts at 2 — labelling it "block 1" again would claim the
+  // model has two of them.
+  firstBlock: 2,
 };
 
 const BASE = new Color(0x9aa0ad);
@@ -50,13 +55,16 @@ const SLAB_H = 0.26;
 const GAP = 0.14;
 
 // Attention ramp on the forge palette: cold ink → forge orange → hot ember.
-const RAMP = [
+// Exported so explainer.js colours its matrix identically — two ramps for the
+// same quantity would read as two different quantities.
+export const RAMP = [
   [0x1c, 0x1c, 0x24],
   [0xea, 0x6a, 0x24],
   [0xff, 0xe6, 0xd5],
 ];
 
-function ramp(t, out, o) {
+/** Write RAMP(t) as RGBA bytes into `out` at offset `o`. `t` is clamped 0..1. */
+export function ramp(t, out, o) {
   const i = t < 0.5 ? 0 : 1;
   const f = t < 0.5 ? t * 2 : (t - 0.5) * 2;
   for (let c = 0; c < 3; c++) {
@@ -216,20 +224,21 @@ export function createStack({ canvas, label, config }) {
       }
     });
     if (!label) return;
+    const named = (i) => cfg.firstBlock + i;
+    const range = `blocks ${named(0)}–${named(cfg.nLayer - 1)}`;
     if (opened >= 0) {
-      label.textContent = `block ${opened} — ${subLayers(cfg).join("  ·  ")}`;
+      label.textContent = `block ${named(opened)} — ${subLayers(cfg).join("  ·  ")}`;
     } else if (hovered >= 0) {
       label.textContent = live
-        ? `block ${hovered} — ${cfg.nHead} heads × ${live} positions`
-        : `block ${hovered} of ${cfg.nLayer}  ·  click to expand`;
+        ? `block ${named(hovered)} — ${cfg.nHead} heads × ${live} positions`
+        : `block ${named(hovered)}  ·  click to expand`;
     } else if (live) {
       label.textContent =
-        `live attention — ${cfg.nLayer} blocks × ${cfg.nHead} heads over ` +
+        `live attention — ${range} × ${cfg.nHead} heads over ` +
         `${live} of ${cfg.nCtx} positions`;
     } else {
       label.textContent =
-        `${cfg.name} — ${cfg.nLayer} blocks, ${cfg.nHead} heads, ` +
-        `n_embd ${cfg.nEmbd}`;
+        `${cfg.name} — ${range}, ${cfg.nHead} heads, n_embd ${cfg.nEmbd}`;
     }
   }
 

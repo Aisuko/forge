@@ -6,6 +6,7 @@
 @source "./index.html";
 @source "./scene.js";
 @source "./demo.js";
+@source "./explainer.js";
 
 @theme {
   --color-forge-50: #fff4ed;
@@ -78,8 +79,12 @@
     @apply mt-3 max-w-2xl text-ink-500 dark:text-ink-300;
   }
 
+  /* min-w-0 is load-bearing: a grid item's automatic minimum size is its
+     min-content width, so a card holding a long <pre> widens its whole column
+     and the page scrolls sideways on a phone — even though the <pre> sits in
+     a .scroll-x box that was supposed to absorb it. */
   .card {
-    @apply rounded-xl border border-ink-100 bg-ink-50/60 p-5
+    @apply min-w-0 rounded-xl border border-ink-100 bg-ink-50/60 p-5
            dark:border-ink-800 dark:bg-ink-900/60;
   }
 
@@ -111,5 +116,118 @@
      scroll horizontally. */
   .scroll-x {
     @apply overflow-x-auto;
+  }
+
+  /* ── the explainer stage ──────────────────────────────────────────────
+     One full-bleed section: a six-station pipeline does not fit inside the
+     max-w-5xl .wrap the rest of the page uses. */
+  .bleed {
+    @apply mx-auto w-full max-w-[1800px] px-3 sm:px-5;
+  }
+
+  .stage-wrap {
+    @apply relative w-full overflow-hidden rounded-2xl border border-ink-100
+           bg-ink-50/70 dark:border-ink-800 dark:bg-ink-950;
+    /* The pipeline is about three times as wide as it is tall, so past this
+       height the extra pixels are margin above and below it, not bigger
+       cells. */
+    height: min(56vh, 520px);
+    min-height: 360px;
+  }
+
+  /* The HTML half of the explainer: text and numbers live here, projected
+     onto 3D anchors each frame. Crisp at any DPR, selectable, and reachable
+     by a screen reader — which 3D text is not. */
+  .stage-overlay {
+    @apply pointer-events-none absolute inset-0;
+  }
+
+  .stage-label {
+    @apply absolute left-0 top-0 whitespace-nowrap font-mono text-[11px]
+           leading-none;
+    will-change: transform;
+  }
+
+  .stage-cap {
+    @apply rounded bg-white/70 px-1.5 py-1 text-ink-700 backdrop-blur-[2px]
+           dark:bg-ink-950/70 dark:text-ink-100;
+  }
+
+  .cap-q {
+    color: #4c8dff;
+  }
+  .cap-k {
+    color: #ff5c5c;
+  }
+  .cap-v {
+    color: #3ecf8e;
+  }
+
+  /* The character over a column: the position a Key, Value or query belongs
+     to, in the model's own vocabulary. */
+  .stage-token {
+    @apply text-ink-500 dark:text-ink-300;
+  }
+
+  /* Values the stage prints rather than only drawing — the eight scores and
+     the eight probabilities they become. */
+  .stage-num {
+    @apply text-[10px] tabular-nums text-ink-700 dark:text-ink-300;
+  }
+
+  /* Dimension ticks down the side of the Query card: 0, 8, 16 … 56. */
+  .stage-dim {
+    @apply text-[10px] tabular-nums text-ink-500 dark:text-ink-500;
+  }
+
+  /* Hovering a key lights it in every station that key touches. */
+  .stage-label.is-lit {
+    @apply font-semibold text-forge-600;
+  }
+
+  .stage-hint,
+  .stage-readout {
+    @apply pointer-events-none absolute left-3 right-3 font-mono text-[11px]
+           text-ink-500 dark:text-ink-300;
+  }
+
+  .stage-hint {
+    @apply top-3;
+  }
+
+  .stage-readout {
+    @apply bottom-3;
+  }
+
+  /* A sibling of .stage-wrap, not a child: below md it has to leave the
+     fixed-height, overflow-hidden stage and sit under it. */
+  .stage-side {
+    @apply mt-3 w-full rounded-xl border border-ink-100 bg-white/85 p-3
+           backdrop-blur dark:border-ink-800 dark:bg-ink-950/85
+           md:absolute md:right-3 md:top-3 md:mt-0 md:w-56;
+  }
+
+  /* Probability bars — a ranked list, so HTML, never 3D. */
+  .prob-row {
+    @apply relative mt-1 overflow-hidden rounded font-mono text-[11px];
+  }
+
+  .prob-fill {
+    @apply absolute inset-y-0 left-0 bg-forge-500/35;
+  }
+
+  .prob-text {
+    @apply relative flex justify-between gap-2 px-1.5 py-0.5;
+  }
+
+  /* Below md the stage gives back the height the side panel no longer
+     overlaps. The pipeline is wider than it is tall, so on a phone it is the
+     width that decides how big a cell can be — extra height would only add
+     empty space above and below it. The triangle and the probability bars are
+     the two things that must stay legible at every width, and they do. */
+  @media (max-width: 767px) {
+    .stage-wrap {
+      height: min(48vh, 360px);
+    }
   }
 }

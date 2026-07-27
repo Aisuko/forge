@@ -14,6 +14,7 @@
 
 Usage: check_site.py [docs/dist]
 """
+import gzip
 import json
 import pathlib
 import re
@@ -106,12 +107,15 @@ if problems:
     sys.exit(1)
 
 total = sum(f.stat().st_size for f in dist.rglob("*") if f.is_file())
-core = sum(
-    (dist / f).stat().st_size
-    for f in ["index.html", "assets/app.css", "scene.js", "demo.js"]
-    if (dist / f).exists()
-)
-print(f"site ok — {total / 1e6:.1f} MB total, {core / 1024:.1f} KB core "
-      f"(HTML+CSS+JS excluding three.js; budget 100 KB)")
-if core > 100 * 1024:
-    sys.exit("core payload is over the 100 KB budget")
+CORE = ["index.html", "assets/app.css", "scene.js", "demo.js", "explainer.js"]
+blobs = [(dist / f).read_bytes() for f in CORE if (dist / f).exists()]
+core = sum(len(b) for b in blobs)
+# Budgeted on the compressed size, because that is what a visitor downloads:
+# Pages serves these gzipped. The raw figure is reported too, but gating on it
+# would be a tax on comments and whitespace — and this source ships
+# unminified on purpose, since the page's claim is that you can read it.
+wire = sum(len(gzip.compress(b, 9)) for b in blobs)
+print(f"site ok — {total / 1e6:.1f} MB total, {wire / 1024:.1f} KB core gzipped "
+      f"({core / 1024:.1f} KB raw; HTML+CSS+JS excluding three.js; budget 45 KB)")
+if wire > 45 * 1024:
+    sys.exit("core payload is over the 45 KB gzipped budget")

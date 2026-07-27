@@ -56,6 +56,10 @@ On Linux, wgpu needs a Vulkan ICD — install `mesa-vulkan-drivers` for a
 software fallback, or run [`scripts/setup_nvidia_vulkan.sh`](scripts/setup_nvidia_vulkan.sh)
 for NVIDIA inside a container. Check with `cargo run --release --example wgpu_probe`.
 
+## License
+
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
+
 ## More
 
 [docs/Forge_Roadmap_V4.md](docs/Forge_Roadmap_V4.md) ·

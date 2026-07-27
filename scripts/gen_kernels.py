@@ -70,12 +70,18 @@ def main(target):
     if n != 1:
         sys.exit("could not find the #kernel-list block in " + target)
 
-    # The headline count appears in the section heading and the hero tile.
+    # The count is written in four places: the section heading, the hero lede,
+    # the <meta> description, and the hero tile. Matching any digits rather
+    # than the literal 23 means a new shader updates all of them, and none of
+    # them can drift from shaders/ the way a hard-coded literal would.
     total = len(names)
-    html = html.replace(">23 WGSL kernels<", f">{total} WGSL kernels<")
-    html = html.replace(
-        '<dd class="mt-1 text-2xl font-semibold">23</dd>',
-        f'<dd class="mt-1 text-2xl font-semibold">{total}</dd>',
+    html, n = re.subn(r"\b\d+ WGSL kernels", f"{total} WGSL kernels", html)
+    if n < 1:
+        sys.exit("no 'N WGSL kernels' phrase to rewrite in " + target)
+    html = re.sub(
+        r'(<dd class="mt-1 text-2xl font-semibold">)\d+(</dd>)',
+        rf"\g<1>{total}\g<2>",
+        html,
     )
     pathlib.Path(target).write_text(html)
     print(f"   kernels: {total} "

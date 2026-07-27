@@ -3,19 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Forge — a nanoGPT-class GPT in Rust, WebGPU-native</title>
+    <title>Forge — how little does it take to run a language model?</title>
     <meta
       name="description"
-      content="Forge is a WebGPU-native machine learning framework in Rust. Train a 43 MB
-               character-level Shakespeare model from scratch, then load real OpenAI GPT-2 124M
-               weights with the same code."
+      content="Forge is a research project into the floor of local inference: one Rust crate,
+               23 WGSL kernels, no CUDA toolchain and no Python runtime. Watch a GPT compute
+               attention in 3D on your own GPU, and measure what a token costs there."
     />
     <!-- Relative, never root-absolute: the site is served from /forge/, not /. -->
     <link rel="stylesheet" href="./assets/app.css" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <!-- three.js r185 ships as two files: the module imports ./three.core.min.js
          beside it. Both are vendored; a missing sibling breaks the whole
-         module graph before scene.js runs a single line. -->
+         module graph before explainer.js runs a single line. -->
     <script type="importmap">
       { "imports": { "three": "./vendor/three.module.min.js" } }
     </script>
@@ -35,7 +35,8 @@
           <span aria-hidden="true" class="text-forge-500">▰</span> Forge
         </a>
         <ul class="hidden gap-5 text-sm text-ink-500 sm:flex dark:text-ink-300">
-          <li><a class="hover:text-forge-600" href="#demo">Demo</a></li>
+          <li><a class="hover:text-forge-600" href="#demo">Watch it think</a></li>
+          <li><a class="hover:text-forge-600" href="#efficiency">Efficiency</a></li>
           <li><a class="hover:text-forge-600" href="#why">Why</a></li>
           <li><a class="hover:text-forge-600" href="#kernels">Kernels</a></li>
           <li><a class="hover:text-forge-600" href="#quickstart">Quick start</a></li>
@@ -54,18 +55,20 @@
       <header id="top" class="wrap py-16 sm:py-24">
         <p class="chip">Rust · WebGPU · no CUDA, no Python</p>
         <h1 class="mt-5 text-4xl font-bold tracking-tight sm:text-6xl">
-          A <span class="text-forge-600">nanoGPT-class</span> GPT in Rust,
-          WebGPU-native.
+          How little does it take to
+          <span class="text-forge-600">run a language model</span>?
         </h1>
         <p class="lede text-lg">
-          Forge trains a small Shakespeare model from scratch and runs real
-          OpenAI GPT-2 124M weights with the same code — in Rust, on WebGPU.
-          It is built to be read as much as run: every operator, WGSL kernel,
-          and module exists because GPT-2 needs it, and each one is checked
-          against a plain-Rust CPU implementation.
+          Forge is a research project into the floor of local inference: how
+          small the stack can get and still be a real GPT. One Rust crate,
+          23 WGSL kernels, no CUDA toolchain and no Python runtime — training
+          and inference on the same tensors, on whatever GPU you already own.
+        </p>
+        <p class="lede text-lg">
+          Scroll down and it will run on yours, and tell you how fast.
         </p>
         <div class="mt-8 flex flex-wrap gap-3">
-          <a class="btn-primary" href="#demo">Run it in your browser</a>
+          <a class="btn-primary" href="#demo">Watch it think</a>
           <a class="btn-ghost" href="#quickstart">Quick start</a>
           <a class="btn-ghost" href="https://github.com/Aisuko/forge" rel="noopener"
             >Source</a
@@ -84,25 +87,90 @@
         </p>
       </header>
 
-      <!-- ── Live demo + live attention ──────────────────────────────── -->
+      <!-- ── Watch it think: the calculation, in 3D ──────────────────── -->
       <section id="demo" class="section">
-        <div class="wrap">
-          <h2 class="h2">Watch it think</h2>
-          <p class="lede">
-            A 10.77M-parameter character-level GPT — 6 blocks, 6 heads, 384
-            dimensions, a 65-character vocabulary — trained from scratch by
-            Forge on Tiny Shakespeare and running here on your own GPU. The
-            attention beside it is read back off that GPU as each character is
-            produced, not an animation of one.
-          </p>
+        <div class="bleed">
+          <div class="wrap">
+            <h2 class="h2">Watch it think</h2>
+            <p class="lede">
+              A 10.77M-parameter character-level GPT — 6 blocks, 6 heads, 384
+              dimensions, a 65-character vocabulary — trained from scratch by
+              Forge on Tiny Shakespeare and running here on your own GPU. Below
+              is a single head of a single block: <strong>head 1 of block
+              1</strong>, doing the one calculation attention is made of.
+            </p>
+            <p class="lede">
+              Left to right: the <span class="cap-q">Query</span> for the
+              newest character, 64 numbers deep; the
+              <span class="cap-k">Keys</span> of the last 8 characters; the
+              score each key earns, which is nothing more exotic than
+              <code class="font-mono">q · kᵢ / √64</code>; the softmax of those
+              scores, drawn as the causal triangle; and the
+              <span class="cap-v">Values</span> that softmax weights, summed
+              into the head's output. Every cell is a number this model
+              computed on your GPU during the run beside it — not bucketed, not
+              averaged, not a stand-in. Hover one and it will tell you which.
+            </p>
+            <p class="lede">
+              A head is 64 of the model's 384 dimensions, which is small enough
+              to show honestly; the whole layer at once is what made the
+              earlier version of this section unreadable. The other five blocks
+              are folded into the stack underneath — same code, same live
+              attention, one slab each.
+            </p>
+          </div>
 
-          <div id="demo-grid" class="mt-8 grid items-start gap-5 md:grid-cols-2">
-            <!-- Canvas first so the visual leads when the columns stack. -->
-            <div id="scene-card" class="card p-0">
-              <div
-                id="scene-holder"
-                class="relative aspect-4/3 w-full overflow-hidden rounded-xl"
-              >
+          <!-- Relative wrapper, not the stage itself: below md the side panel
+               has to leave the fixed-height stage and sit under it. -->
+          <div class="relative mt-8">
+            <div id="stage-wrap" class="stage-wrap">
+              <canvas id="stage" class="h-full w-full" aria-hidden="true"></canvas>
+              <div id="stage-overlay" class="stage-overlay"></div>
+
+              <p id="stage-hint" class="stage-hint">
+                drag to rotate · scroll to zoom · hover any cell for its value
+              </p>
+              <p id="stage-readout" class="stage-readout" role="status"></p>
+            </div>
+
+            <div id="stage-side" class="stage-side">
+              <h3 class="text-xs font-semibold">Next character</h3>
+              <p class="mt-1 text-[11px] text-ink-500 dark:text-ink-300">
+                The model's own probabilities, over the whole vocabulary.
+              </p>
+              <div id="stage-probs" class="mt-2"></div>
+            </div>
+          </div>
+
+          <!-- Shown instead of the canvas when WebGL is unavailable or
+               explainer.js fails to load. The token list and the probability
+               bars above are plain HTML and keep working either way. -->
+          <div id="stage-fallback" class="wrap mt-4" hidden>
+            <div class="card">
+              <h3 class="font-semibold">The calculation, in words</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Your browser has no WebGL, so the 3D stage is not drawn. The
+                model still ran on your GPU and the numbers beside it are real.
+                What the stage would show is one head of one block: the newest
+                position's Query, a vector of 64 numbers, scored against the
+                Key of every position before it as q · kᵢ / √64; a softmax over
+                those scores, which is where the causal mask makes the picture
+                a triangle; and the Values of those same positions, weighted by
+                that softmax and summed into the head's output. Six heads do
+                that at once, their outputs are concatenated back to 384
+                dimensions, and an MLP that widens 384 → 1536, applies GELU and
+                comes back writes into the same residual stream — six blocks
+                deep.
+              </p>
+              <p id="stage-fallback-tokens" class="mt-3 font-mono text-xs text-ink-500 dark:text-ink-300"></p>
+            </div>
+          </div>
+
+          <!-- The remaining blocks, folded: same code, same live attention,
+               drawn by scene.js. -->
+          <div class="wrap mt-5 grid items-start gap-5 md:grid-cols-2">
+            <div id="folded-card" class="card p-0">
+              <div class="relative aspect-4/3 w-full overflow-hidden rounded-xl">
                 <canvas id="scene" class="h-full w-full" aria-hidden="true"></canvas>
                 <p
                   id="scene-label"
@@ -207,51 +275,113 @@
             </div>
           </div>
 
-          <!-- The same architecture in words: readable on a phone, legible to
-               a screen reader, and demo.js opens it if WebGL is unavailable. -->
-          <details id="stack-text" class="card mt-5">
-            <summary class="cursor-pointer font-semibold">
-              The same stack, in text
-            </summary>
-            <ol class="mt-4 space-y-3 text-sm text-ink-500 dark:text-ink-300">
-              <li>
-                <strong class="text-ink-800 dark:text-ink-100"
-                  >models/gpt2/</strong
-                >
-                — config, the 6 transformer blocks above, KV-cache decode, and
-                generation. Each block is LayerNorm → causal self-attention
-                (6 heads × 64) → LayerNorm → MLP (384 → 1536 → 384, GELU).
-              </li>
-              <li>
-                <strong class="text-ink-800 dark:text-ink-100"
-                  >nn/, autograd/, optim/</strong
-                >
-                — Linear, LayerNorm, Embedding with a row-chunked token table;
-                a tape-based reverse mode; AdamW.
-              </li>
-              <li>
-                <strong class="text-ink-800 dark:text-ink-100">ops.rs</strong>
-                — shape-checked dispatch, one API over both backends.
-              </li>
-              <li>
-                <strong class="text-ink-800 dark:text-ink-100">backend/</strong>
-                — WGPU (23 WGSL kernels) and CPU (a plain Rust reference).
-              </li>
-            </ol>
-            <p class="mt-4 text-sm text-ink-500 dark:text-ink-300">
-              Context 256 characters, 65-token vocabulary, LM head weight-tied
-              to the token embedding. GPT-2 124M is the same code with
-              12 blocks, 12 heads and n_embd 768 — 548 MB of weights, so it
-              stays a local artifact:
-              <code class="font-mono">./scripts/build_site.sh &amp;&amp; ./scripts/serve_web.sh</code>.
-            </p>
-          </details>
-
-          <p class="mt-4 text-sm text-ink-500 dark:text-ink-300">
+          <p class="wrap mt-4 text-sm text-ink-500 dark:text-ink-300">
             No server does the work — your GPU does. Forge needs no
             <code class="font-mono">SharedArrayBuffer</code>, because
             <code class="font-mono">rayon</code> is native-only, so this page is
             plain static files.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── What a token costs ──────────────────────────────────────── -->
+      <section id="efficiency" class="section">
+        <div class="wrap">
+          <h2 class="h2">What a token costs</h2>
+          <p class="lede">
+            10.77 million parameters is not a small language model by the
+            industry's use of the phrase — it is three orders of magnitude
+            below it. The research question is what that floor actually buys,
+            and the only answer worth printing is the one measured on the
+            machine in front of you.
+          </p>
+
+          <div class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="card">
+              <dt class="text-sm text-ink-500 dark:text-ink-300">Your GPU</dt>
+              <dd id="eff-gpu" class="mt-1 font-mono text-sm">—</dd>
+            </div>
+            <div class="card">
+              <dt class="text-sm text-ink-500 dark:text-ink-300">Decode speed</dt>
+              <dd id="eff-tps" class="mt-1 text-2xl font-semibold">—</dd>
+            </div>
+            <div class="card">
+              <dt class="text-sm text-ink-500 dark:text-ink-300">Weights on disk</dt>
+              <dd id="eff-size" class="mt-1 text-2xl font-semibold">—</dd>
+            </div>
+            <div class="card">
+              <dt class="text-sm text-ink-500 dark:text-ink-300">Parameters</dt>
+              <dd id="eff-params" class="mt-1 text-2xl font-semibold">—</dd>
+            </div>
+          </div>
+
+          <p id="eff-note" class="mt-4 text-sm text-ink-500 dark:text-ink-300">
+            Nothing here is filled in until you press Run above — every figure
+            is produced by your own hardware, so none of it can go stale.
+          </p>
+
+          <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
+            What is <em>not</em> in that budget is as much the point: no CUDA
+            toolkit, no Python interpreter, no PyTorch, no ONNX runtime, and no
+            server round trip. The cost of a token here is the cost of the
+            arithmetic plus one WebGPU dispatch queue.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── Runs where you are ──────────────────────────────────────── -->
+      <section id="portable" class="section">
+        <div class="wrap">
+          <h2 class="h2">Runs where you are</h2>
+          <p class="lede">
+            One set of WGSL kernels, four places to run them. The browser tab
+            and the workstation take the same code path — not an equivalent
+            one, the same one.
+          </p>
+
+          <div class="scroll-x mt-8">
+            <table class="w-full min-w-xl text-left text-sm">
+              <thead class="text-ink-500 dark:text-ink-300">
+                <tr class="border-b border-ink-100 dark:border-ink-800">
+                  <th class="py-2 pr-4 font-medium">Where</th>
+                  <th class="py-2 pr-4 font-medium">Backend</th>
+                  <th class="py-2 font-medium">What it needs</th>
+                </tr>
+              </thead>
+              <tbody class="font-mono text-xs">
+                <tr class="border-b border-ink-100 dark:border-ink-800">
+                  <td class="py-2 pr-4">Linux workstation</td>
+                  <td class="py-2 pr-4">wgpu → Vulkan</td>
+                  <td class="py-2">a Vulkan ICD (mesa or the vendor driver)</td>
+                </tr>
+                <tr class="border-b border-ink-100 dark:border-ink-800">
+                  <td class="py-2 pr-4">macOS, Apple silicon</td>
+                  <td class="py-2 pr-4">wgpu → Metal</td>
+                  <td class="py-2">nothing beyond the OS</td>
+                </tr>
+                <tr class="border-b border-ink-100 dark:border-ink-800">
+                  <td class="py-2 pr-4">Windows</td>
+                  <td class="py-2 pr-4">wgpu → D3D12</td>
+                  <td class="py-2">nothing beyond the OS</td>
+                </tr>
+                <tr>
+                  <td class="py-2 pr-4">This page</td>
+                  <td class="py-2 pr-4">wasm32 → WebGPU</td>
+                  <td class="py-2">Chrome/Edge 113+ or Safari 26+</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
+            The wasm build is the library with a
+            <code class="font-mono">wasm-bindgen</code> facade over the async
+            inference API — not a port. Native-only dependencies
+            (<code class="font-mono">rayon</code>,
+            <code class="font-mono">pollster</code>, the
+            <code class="font-mono">forge-top</code> terminal UI) are behind
+            target and feature gates, which is why this page needs no
+            cross-origin isolation headers and ships as static files.
           </p>
         </div>
       </section>
@@ -275,11 +405,10 @@
             <div class="card">
               <h3 class="font-semibold">WebGPU, not CUDA</h3>
               <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                One set of WGSL kernels reaches Vulkan, Metal, D3D12, and the
-                browser through
-                <a class="text-forge-600 hover:underline" href="https://github.com/gfx-rs/wgpu" rel="noopener">wgpu</a>.
-                Reaching an NVIDIA GPU and reaching this page are the same code
-                path; there is no CUDA toolchain to install.
+                One set of WGSL kernels reaches every target above through
+                <a class="text-forge-600 hover:underline" href="https://github.com/gfx-rs/wgpu" rel="noopener">wgpu</a>,
+                with no vendor toolchain to install — and no vendor to be
+                locked to.
               </p>
             </div>
             <div class="card">
@@ -292,29 +421,118 @@
               </p>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- ── Read the whole thing ────────────────────────────────────── -->
+      <section id="read" class="section">
+        <div class="wrap">
+          <h2 class="h2">Read the whole thing</h2>
+          <p class="lede">
+            Small enough to read in an afternoon, and laid out so you can. Each
+            entry below is a link to the actual source.
+          </p>
+
+          <ol class="mt-8 space-y-3 text-sm text-ink-500 dark:text-ink-300">
+            <li>
+              <a
+                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
+                href="https://github.com/Aisuko/forge/tree/main/src/models/gpt2"
+                rel="noopener"
+                >src/models/gpt2/</a
+              >
+              — config, the transformer blocks, KV-cache decode, generation, and
+              the trace the section above is drawn from. Each block is
+              LayerNorm → causal self-attention (6 heads × 64) → LayerNorm →
+              MLP (384 → 1536 → 384, GELU).
+            </li>
+            <li>
+              <a
+                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
+                href="https://github.com/Aisuko/forge/tree/main/src/nn"
+                rel="noopener"
+                >src/nn/</a
+              >,
+              <a
+                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
+                href="https://github.com/Aisuko/forge/tree/main/src/autograd"
+                rel="noopener"
+                >src/autograd/</a
+              >,
+              <a
+                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
+                href="https://github.com/Aisuko/forge/tree/main/src/optim"
+                rel="noopener"
+                >src/optim/</a
+              >
+              — Linear, LayerNorm, Embedding with a row-chunked token table; a
+              tape-based reverse mode; AdamW.
+            </li>
+            <li>
+              <a
+                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
+                href="https://github.com/Aisuko/forge/blob/main/src/ops.rs"
+                rel="noopener"
+                >src/ops.rs</a
+              >
+              — shape-checked dispatch, one API over both backends.
+            </li>
+            <li>
+              <a
+                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
+                href="https://github.com/Aisuko/forge/tree/main/src/backend"
+                rel="noopener"
+                >src/backend/</a
+              >
+              — the WGPU backend and the CPU reference. Every
+              <code class="font-mono">shaders/*.wgsl</code> kernel has a
+              plain-Rust twin here computing the same thing the slow, obvious
+              way; that pairing is what makes the parity claim checkable rather
+              than assertable.
+            </li>
+          </ol>
 
           <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
-            <strong class="text-ink-800 dark:text-ink-100"
-              >“nanoGPT-class” is not a rebrand.</strong
-            >
-            nanoGPT <em>is</em> the GPT-2 architecture — pre-LN blocks, causal
-            self-attention, a 4× GELU MLP, learned positional embeddings, weight
-            tying — and loading OpenAI's weights is its own headline feature.
-            One caveat: Forge stores <code class="font-mono">Linear</code>
-            weights as <code class="font-mono">[in, out]</code> (the HF Conv1D
+            One compatibility note worth knowing before you load a checkpoint:
+            Forge stores <code class="font-mono">Linear</code> weights as
+            <code class="font-mono">[in, out]</code> (the HuggingFace Conv1D
             convention) rather than nanoGPT's
             <code class="font-mono">[out, in]</code>, and reads safetensors
-            rather than PyTorch pickles, so checkpoints are not binary-
-            interchangeable with nanoGPT <code class="font-mono">.pt</code>
-            files.
+            rather than PyTorch pickles — so files are not interchangeable with
+            nanoGPT <code class="font-mono">.pt</code> checkpoints.
           </p>
+
+          <div class="mt-8 grid gap-5 md:grid-cols-2">
+            <div class="card">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold">Run this page locally</h3>
+                <button class="btn-ghost text-xs" type="button" data-copy="cmd-web">
+                  Copy
+                </button>
+              </div>
+              <div class="scroll-x mt-3">
+                <pre id="cmd-web" class="font-mono text-xs leading-relaxed">./scripts/build_site.sh
+./scripts/serve_web.sh
+# plain static files — no COOP/COEP headers needed</pre>
+              </div>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">Context for the section above</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Context 256 characters, 65-token vocabulary, LM head weight-tied
+                to the token embedding. GPT-2 124M is the same code with 12
+                blocks, 12 heads and n_embd 768 — 548 MB of weights, so it stays
+                a local artifact rather than something this page downloads.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 
       <!-- ── Kernels ─────────────────────────────────────────────────── -->
       <section id="kernels" class="section">
         <div class="wrap">
-          <h2 class="h2">23 WGSL kernels</h2>
+          <h2 class="h2">23 WGSL kernels in Rust</h2>
           <p class="lede">
             The complete compute surface, generated from
             <code class="font-mono">shaders/</code> at build time so this list
@@ -365,6 +583,47 @@
         </div>
       </section>
 
+      <!-- ── Train it yourself ───────────────────────────────────────── -->
+      <section id="train" class="section">
+        <div class="wrap">
+          <h2 class="h2">Train it yourself</h2>
+          <p class="lede">
+            The model in the section above is not a download — it is what this
+            command produces. Training and inference are the same code on the
+            same tensors, so there is no separate training stack to install and
+            nothing that only exists at train time.
+          </p>
+
+          <div class="mt-8 grid gap-5 md:grid-cols-2">
+            <div class="card">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold">Tiny Shakespeare, from scratch</h3>
+                <button class="btn-ghost text-xs" type="button" data-copy="cmd-train">
+                  Copy
+                </button>
+              </div>
+              <div class="scroll-x mt-3">
+                <pre id="cmd-train" class="font-mono text-xs leading-relaxed">./scripts/download_shakespeare.sh
+
+# 6 blocks / 6 heads / 384 dims, 65-token vocab
+cargo run --release --example train_shakespeare -- \
+  --backend wgpu</pre>
+              </div>
+            </div>
+            <div class="card">
+              <h3 class="font-semibold">What comes out</h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                A safetensors checkpoint and its vocabulary, byte-identical in
+                layout to the one this page loads. Point
+                <code class="font-mono">--model</code> at it and the demo above
+                runs your weights instead — the forward pass, the KV cache and
+                the trace do not know the difference.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ── Quick start ─────────────────────────────────────────────── -->
       <section id="quickstart" class="section">
         <div class="wrap">
@@ -393,23 +652,6 @@ cargo run --release --example generate -- \
 
             <div class="card">
               <div class="flex items-center justify-between gap-3">
-                <h3 class="font-semibold">Train the demo model</h3>
-                <button class="btn-ghost text-xs" type="button" data-copy="cmd-train">
-                  Copy
-                </button>
-              </div>
-              <div class="scroll-x mt-3">
-                <pre id="cmd-train" class="font-mono text-xs leading-relaxed">./scripts/download_shakespeare.sh
-
-# nanoGPT shakespeare_char defaults:
-# 6L/6H/384d, 65-token vocab, 10.77M params
-cargo run --release --example train_shakespeare -- \
-  --backend wgpu</pre>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="flex items-center justify-between gap-3">
                 <h3 class="font-semibold">Browse models in the terminal</h3>
                 <button class="btn-ghost text-xs" type="button" data-copy="cmd-tui">
                   Copy
@@ -422,20 +664,6 @@ cargo run --release --features tui \
   --bin forge-top -- --path models/</pre>
               </div>
             </div>
-
-            <div class="card">
-              <div class="flex items-center justify-between gap-3">
-                <h3 class="font-semibold">Run this demo locally</h3>
-                <button class="btn-ghost text-xs" type="button" data-copy="cmd-web">
-                  Copy
-                </button>
-              </div>
-              <div class="scroll-x mt-3">
-                <pre id="cmd-web" class="font-mono text-xs leading-relaxed">./scripts/build_site.sh
-./scripts/serve_web.sh
-# plain static files — no COOP/COEP headers needed</pre>
-              </div>
-            </div>
           </div>
         </div>
       </section>
@@ -445,7 +673,7 @@ cargo run --release --features tui \
       <div
         class="wrap flex flex-wrap items-center justify-between gap-4 text-sm text-ink-500 dark:text-ink-300"
       >
-        <p>Apache-2.0 licensed.</p>
+        <p>AGPL-3.0 licensed.</p>
         <p class="flex gap-4">
           <a class="hover:text-forge-600" href="https://github.com/Aisuko/forge" rel="noopener"
             >Repository</a
@@ -467,7 +695,8 @@ cargo run --release --features tui \
     </footer>
 
     <!-- Modules are deferred by default, so this does not block first paint.
-         demo.js pulls in scene.js (and three.js) only when #demo is reached. -->
+         demo.js pulls in explainer.js and scene.js (and three.js) only when
+         #demo is reached. -->
     <script type="module" src="./demo.js"></script>
     <script type="module">
       // Copy buttons — progressive enhancement, no dependency.

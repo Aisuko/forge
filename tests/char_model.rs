@@ -7,7 +7,9 @@
 
 use std::ops::ControlFlow;
 
-use forge::{AnyTokenizer, AttnStep, Device, Gpt2, Gpt2Config, Sampling, Tokenizer as _};
+use forge::{
+    AnyTokenizer, AttnStep, Device, Gpt2, Gpt2Config, Sampling, StepTrace, Tokenizer as _,
+};
 
 const DIR: &str = "assets/shakespeare_char";
 const PROMPT: &str = "ROMEO:";
@@ -179,4 +181,94 @@ fn attention_probe_does_not_change_the_output() {
     );
     // Prefill plus one capture per generated token.
     assert_eq!(seen, N + 1, "the probe skipped or duplicated a decode step");
+}
+
+/// The full trace must be a strict superset of the attention probe, not a
+/// second implementation of it: the same run, the same text, and byte-identical
+/// probabilities for every block of every step.
+#[test]
+fn the_trace_is_a_superset_of_the_attention_probe() {
+    let Some((config, tok)) = assets() else {
+        return;
+    };
+    let model = model_on(config.clone(), &Device::wgpu().unwrap());
+    const N: usize = 8;
+    const DETAIL: usize = 3;
+    const TOP: usize = 24;
+    let sampling = Sampling::Greedy;
+
+    let mut attn_runs: Vec<Vec<AttnStep>> = Vec::new();
+    let plain = pollster::block_on(model.generate_async_probe(
+        &tok,
+        PROMPT,
+        N,
+        sampling,
+        |_| ControlFlow::Continue(()),
+        Some(|steps: &[AttnStep]| attn_runs.push(steps.to_vec())),
+    ))
+    .unwrap();
+
+    let mut traces: Vec<StepTrace> = Vec::new();
+    let traced = pollster::block_on(model.generate_async_trace(
+        &tok,
+        PROMPT,
+        N,
+        sampling,
+        |_| ControlFlow::Continue(()),
+        Some(|t: &StepTrace| traces.push(t.clone())),
+        DETAIL,
+        TOP,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        plain, traced,
+        "reading the detail tensors changed the generated text"
+    );
+    assert_eq!(traces.len(), attn_runs.len(), "different step counts");
+
+    let prompt_len = tok.encode(PROMPT).unwrap().len();
+    for (step, (trace, attn)) in traces.iter().zip(&attn_runs).enumerate() {
+        assert_eq!(trace.attn.len(), config.n_layer, "one capture per block");
+        for (a, b) in trace.attn.iter().zip(attn) {
+            assert_eq!((a.layer, a.n_head), (b.layer, b.n_head));
+            assert_eq!((a.q_len, a.kv_len), (b.q_len, b.kv_len));
+            assert_eq!(a.probs, b.probs, "step {step}: attention differs");
+        }
+
+        // Prefill paints the whole prompt at once; every decode step is one
+        // query row against one more cached position.
+        let want_q = if step == 0 { prompt_len } else { 1 };
+        assert_eq!(trace.q_len, want_q);
+        assert_eq!(trace.kv_len, prompt_len + step);
+        assert_eq!(trace.embedding.len(), trace.q_len * config.n_embd);
+
+        let hd = config.n_embd / config.n_head;
+        assert_eq!(trace.detail.len(), DETAIL);
+        for (layer, d) in trace.detail.iter().enumerate() {
+            assert_eq!(d.layer, layer);
+            for (name, got) in [("q", &d.q), ("k", &d.k), ("v", &d.v)] {
+                assert_eq!(
+                    got.len(),
+                    config.n_head * trace.q_len * hd,
+                    "step {step} layer {layer} {name}"
+                );
+            }
+            assert_eq!(d.mlp_hidden.len(), trace.q_len * 4 * config.n_embd);
+            assert_eq!(d.block_out.len(), trace.q_len * config.n_embd);
+        }
+
+        // Real probabilities over the whole vocabulary, ranked.
+        assert_eq!(trace.top.len(), TOP.min(config.vocab_size));
+        let mut sum = 0.0;
+        for w in trace.top.windows(2) {
+            assert!(w[0].1 >= w[1].1, "step {step}: top-n is not ranked");
+        }
+        for (id, p) in &trace.top {
+            assert!((*id as usize) < config.vocab_size);
+            assert!((0.0..=1.0).contains(p), "step {step}: probability {p}");
+            sum += p;
+        }
+        assert!(sum <= 1.0 + 1e-4, "step {step}: probabilities sum to {sum}");
+    }
 }

@@ -3,11 +3,24 @@
 //
 // Progressive enhancement throughout: every failure below replaces the panel
 // with an explanation, and none of them blanks it or breaks the rest of the
-// page.
+// page. The three moving parts fail independently on purpose — WebGPU (the
+// model), WebGL (the 3D stage), and the plain HTML readouts — and any one of
+// them missing still leaves a complete page.
 
 const $ = (id) => document.getElementById(id);
 const panel = $("demo-panel");
 const app = $("demo-app");
+
+// How many blocks the explainer captures in full. It draws one head of one
+// block in detail, so one is all it needs — and one layer of readback per step
+// instead of three. The rest are the folded stack: they run the identical
+// code, and their attention still feeds the slabs.
+const DETAIL = 1;
+// Probability bars to rank. 24 fits the panel; the char vocabulary is 65.
+const TOP_N = 24;
+// Above this the prefill detail readback is worth megabytes for one frame, so
+// it is skipped and the attention triangle carries the section alone.
+const MAX_DETAIL_PROMPT = 96;
 
 /** Replace the demo with an explanatory card. Never leaves an empty box. */
 function explain(title, body, retry) {
@@ -29,35 +42,103 @@ function explain(title, body, retry) {
   }
 }
 
-// ── The 3D stack ──────────────────────────────────────────────────────────
+// ── HTML readouts ─────────────────────────────────────────────────────────
+// Plain DOM, no three.js: these are what survives when WebGL does not, and a
+// ranked list gains nothing from being drawn in 3D.
+
+const glyph = (s) => (s ?? "").replace(/\n/g, "↵").replace(/ /g, "␣") || "·";
+
+/** The model's next-token distribution, as bars. */
+function renderProbs(el, top) {
+  if (!el) return;
+  el.textContent = "";
+  for (const t of top) {
+    const row = document.createElement("div");
+    row.className = "prob-row";
+    const fill = document.createElement("span");
+    fill.className = "prob-fill";
+    fill.style.width = `${(t.p * 100).toFixed(1)}%`;
+    const text = document.createElement("span");
+    text.className = "prob-text";
+    const name = document.createElement("span");
+    name.textContent = glyph(t.token);
+    const p = document.createElement("span");
+    p.className = "text-ink-500 dark:text-ink-300";
+    p.textContent = t.p.toFixed(3);
+    text.append(name, p);
+    row.append(fill, text);
+    el.append(row);
+  }
+}
+
+/** The token columns, for the no-WebGL panel. */
+function renderTokens(el, tokens) {
+  if (!el) return;
+  el.textContent = tokens.length
+    ? `positions: ${tokens.map(glyph).join(" ")}`
+    : "";
+}
+
+// ── The 3D stage ──────────────────────────────────────────────────────────
 // Separate from the WebGPU check on purpose: WebGL and WebGPU fail
 // independently, and either one missing must still leave a complete page.
 
+let stagePromise = null;
 let scenePromise = null;
 
-/** Start the scene at most once; resolves to the controller or null. */
-function ensureScene() {
-  scenePromise = scenePromise || startScene();
-  return scenePromise;
+/** Start the explainer at most once; resolves to the controller or null. */
+function ensureStage() {
+  stagePromise = stagePromise || startStage();
+  return stagePromise;
 }
 
-async function startScene() {
-  const canvas = $("scene");
+async function startStage() {
+  const canvas = $("stage");
   if (!canvas) return null;
   try {
     // three.js is 751 KB and lives behind this call, so it is fetched when
     // the section is reached rather than on first paint.
+    const { createExplainer } = await import("./explainer.js");
+    return createExplainer({
+      canvas,
+      overlay: $("stage-overlay"),
+      readout: $("stage-readout"),
+    });
+  } catch (e) {
+    // No WebGL, or the module itself failed to load. Drop the canvas
+    // entirely — an empty rectangle is worse than no rectangle — and show
+    // the panel that says the same thing in words. The probability bars and
+    // the token list beside it are plain HTML and keep working.
+    console.warn("3D explainer unavailable:", e);
+    $("stage-wrap")?.remove();
+    const fallback = $("stage-fallback");
+    if (fallback) fallback.hidden = false;
+    return null;
+  }
+}
+
+/**
+ * The folded remainder of the stack — the blocks the explainer does not draw
+ * in full. Started at most once, and independent of the explainer: scene.js
+ * can load and run when explainer.js does not.
+ */
+function ensureScene(nLayer) {
+  scenePromise = scenePromise || startScene(nLayer);
+  return scenePromise;
+}
+
+async function startScene(nLayer) {
+  const canvas = $("scene");
+  if (!canvas || nLayer < 1) {
+    $("folded-card")?.remove();
+    return null;
+  }
+  try {
     const { createStack } = await import("./scene.js");
     return createStack({ canvas, label: $("scene-label") });
   } catch (e) {
-    // No WebGL, or the module itself failed to load. Drop the canvas
-    // entirely — an empty rectangle is worse than no rectangle — and open
-    // the text architecture, which says the same thing in words.
-    console.warn("3D stack unavailable:", e);
-    $("scene-card")?.remove();
-    $("demo-grid")?.classList.remove("md:grid-cols-2");
-    const text = $("stack-text");
-    if (text) text.open = true;
+    console.warn("folded stack unavailable:", e);
+    $("folded-card")?.remove();
     return null;
   }
 }
@@ -68,14 +149,14 @@ if (section && "IntersectionObserver" in window) {
     (entries, obs) => {
       if (entries.some((e) => e.isIntersecting)) {
         obs.disconnect();
-        ensureScene();
+        ensureStage();
       }
     },
     { rootMargin: "200px" },
   );
   io.observe(section);
 } else {
-  ensureScene();
+  ensureStage();
 }
 
 // ── The demo itself ───────────────────────────────────────────────────────
@@ -105,6 +186,7 @@ function wire() {
   let model = null;
   let loading = null;
   let stop = false;
+  let weightBytes = 0;
 
   /** Fetch with a progress callback — 43 MB deserves a bar. */
   async function fetchBytes(url, onProgress) {
@@ -145,11 +227,34 @@ function wire() {
       fetch(`${base}/vocab.json`).then((r) => r.text()),
     ]);
     progress(null);
+    weightBytes = bytes.length;
 
     status("requesting a WebGPU adapter and uploading weights…");
     const m = await WasmGpt2.load_char(bytes, config, vocab);
     status(`ready — ${m.device_info()} · ${m.vocab_size()}-token ${m.tokenizer_kind()} vocab`);
     return m;
+  }
+
+  /**
+   * Parameter count from the config the model reports, not a constant typed
+   * into this file. Weight-tied LM head, so wte is counted once.
+   */
+  function paramCount(m) {
+    const c = m.n_embd();
+    // Per block: 12c² of weights (3c² qkv, c² proj, 4c² fc, 4c² mlp proj) and
+    // 13c of biases and LayerNorm parameters.
+    const perBlock = 12 * c * c + 13 * c;
+    return m.vocab_size() * c + m.n_ctx() * c + m.n_layer() * perBlock + 2 * c;
+  }
+
+  /** The efficiency tiles. Measured values or an em dash — never a guess. */
+  function fillTiles(m, tokPerSec) {
+    $("eff-gpu").textContent = m.device_info();
+    $("eff-tps").textContent = `${tokPerSec.toFixed(1)} tok/s`;
+    $("eff-size").textContent = `${(weightBytes / 1e6).toFixed(1)} MB`;
+    $("eff-params").textContent = `${(paramCount(m) / 1e6).toFixed(2)} M`;
+    $("eff-note").textContent =
+      "Measured on your machine, in the run above — not on ours.";
   }
 
   /** The char vocab knows 65 characters; say so before generating, not after. */
@@ -190,16 +295,41 @@ function wire() {
       }
       if (!checkCharset()) return;
 
-      // The visualization must describe the model that is running, not the
-      // defaults it was built with.
-      const scene = await ensureScene();
-      scene?.setConfig({
+      const detailLayers = Math.min(DETAIL, model.n_layer());
+      const folded = model.n_layer() - detailLayers;
+
+      // Both visualizations must describe the model that is running, not the
+      // defaults they were built with.
+      const stage = await ensureStage();
+      stage?.setConfig({
         nLayer: model.n_layer(),
         nHead: model.n_head(),
         nEmbd: model.n_embd(),
         nCtx: model.n_ctx(),
       });
+      stage?.reset();
+
+      const scene = await ensureScene(folded);
+      scene?.setConfig({
+        nLayer: folded,
+        // The stage above draws the first `detailLayers` blocks, so this stack
+        // starts at the one after them — counting from 1, as the page does.
+        firstBlock: detailLayers + 1,
+        nHead: model.n_head(),
+        nEmbd: model.n_embd(),
+        nCtx: model.n_ctx(),
+      });
       scene?.reset();
+
+      const prompt = $("demo-prompt").value;
+      const tokens = Array.from(model.tokenize_display(prompt));
+      stage?.setTokens(tokens);
+      renderTokens($("stage-fallback-tokens"), tokens);
+
+      // The §3.6 guard: a long prompt would make the prefill readback the most
+      // expensive thing on the page, for one frame nobody asked for.
+      const withDetail = tokens.length <= MAX_DETAIL_PROMPT;
+      stage?.setDetailEnabled(withDetail);
 
       $("demo-output").textContent = "";
       $("demo-stop").hidden = false;
@@ -210,42 +340,76 @@ function wire() {
       const topk = Number($("demo-sampling").value);
       const t0 = performance.now();
       let count = 0;
-      let first = null;
+      let decodeStart = null;
 
       const onText = (s) => {
         // Returning false stops generation after the current token.
         if (stop) return false;
-        if (first === null) first = performance.now();
-        count += 1;
         $("demo-output").textContent += s;
-        const dt = (performance.now() - first) / 1000;
-        if (dt > 0) {
-          status(`generating — ${(count / dt).toFixed(1)} tok/s`);
+        // The first delta is the prompt itself, echoed once the prefill lands.
+        // It is not a generated token and must not be counted as one.
+        if (decodeStart === null) {
+          decodeStart = performance.now();
+          return;
+        }
+        count += 1;
+        stage?.pushToken(s);
+        const dt = (performance.now() - decodeStart) / 1000;
+        if (dt > 0) status(`generating — ${(count / dt).toFixed(1)} tok/s`);
+      };
+
+      const onTrace = (trace) => {
+        // A failing visualization must never take generation down with it.
+        try {
+          stage?.pushTrace(trace);
+          renderProbs($("stage-probs"), trace.top);
+          for (const a of trace.attn) {
+            if (a.layer < detailLayers) continue;
+            // The folded stack draws the newest query row of each remaining
+            // block, renumbered from 0 so its slabs line up.
+            const last = (a.qLen - 1) * a.kvLen;
+            const row = new Float32Array(a.nHead * a.kvLen);
+            for (let h = 0; h < a.nHead; h++) {
+              row.set(
+                a.probs.subarray(
+                  h * a.qLen * a.kvLen + last,
+                  h * a.qLen * a.kvLen + last + a.kvLen,
+                ),
+                h * a.kvLen,
+              );
+            }
+            scene?.pushAttention(a.layer - detailLayers, a.nHead, row);
+          }
+        } catch (e) {
+          console.warn("visualization step failed:", e);
         }
       };
-      const args = [
-        $("demo-prompt").value,
+
+      // Text generation never depends on the views. onTrace swallows its own
+      // failures, and the trace path is taken even with no WebGL at all —
+      // the probability bars are HTML, and they are the readout that must
+      // survive everything else going missing.
+      await model.generate_with_trace(
+        prompt,
         n,
         topk,
         0.8,
         BigInt(Date.now() % 100000),
         onText,
-      ];
-
-      // Text generation never depends on the 3D view: without it the plain
-      // path runs, and it does no attention readback at all.
-      await (scene
-        ? model.generate_with_attention(...args, (layer, nHead, weights) =>
-            scene.pushAttention(layer, nHead, weights),
-          )
-        : model.generate(...args));
+        onTrace,
+        stage && withDetail ? detailLayers : 0,
+        TOP_N,
+      );
 
       const dt = (performance.now() - t0) / 1000;
-      const decode = first === null ? dt : (performance.now() - first) / 1000;
+      const decode =
+        decodeStart === null ? dt : (performance.now() - decodeStart) / 1000;
+      const rate = count / Math.max(decode, 1e-3);
       status(
-        `${count} tokens in ${dt.toFixed(1)}s · ${(count / Math.max(decode, 1e-3)).toFixed(1)} tok/s · ` +
+        `${count} tokens in ${dt.toFixed(1)}s · ${rate.toFixed(1)} tok/s · ` +
           `${model.device_info()}`,
       );
+      if (count > 0) fillTiles(model, rate);
     } catch (e) {
       // console_error_panic_hook is installed by wasm::start, so a Rust panic
       // arrives here with a real message rather than "unreachable".

@@ -45,3 +45,4 @@ target/
 /docs/dist/
 /.cache/
 Cargo.lock
+references/

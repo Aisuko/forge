@@ -5,12 +5,83 @@
 use wasm_bindgen::prelude::*;
 
 use crate::Device;
-use crate::models::gpt2::{AttnStep, Gpt2, Gpt2Config, Sampling};
+use crate::models::gpt2::{AttnStep, Gpt2, Gpt2Config, Sampling, StepTrace};
 use crate::tokenizer::{AnyTokenizer, CharTokenizer, Gpt2Tokenizer, Tokenizer as _};
 
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
+}
+
+/// Set a property on a freshly built object. `Reflect::set` can only fail on an
+/// exotic target (a frozen object, a proxy that throws); these are plain
+/// `Object::new()` results, so the Result carries no information.
+fn set(o: &js_sys::Object, key: &str, v: &JsValue) {
+    let _ = js_sys::Reflect::set(o, &JsValue::from_str(key), v);
+}
+
+fn num(v: usize) -> JsValue {
+    JsValue::from_f64(v as f64)
+}
+
+fn f32a(v: &[f32]) -> JsValue {
+    js_sys::Float32Array::from(v).into()
+}
+
+/// One step's trace as a plain JS object — see `generate_with_trace`.
+///
+/// Hand-built with `Reflect::set` rather than through a serde bridge: the big
+/// fields are `Float32Array`s that must not be copied through JSON, and the
+/// handful of scalars do not justify a new crate dependency.
+fn trace_to_js(t: &StepTrace, tokenizer: &AnyTokenizer) -> JsValue {
+    let o = js_sys::Object::new();
+    set(&o, "qLen", &num(t.q_len));
+    set(&o, "kvLen", &num(t.kv_len));
+    set(&o, "nHead", &num(t.n_head));
+    set(&o, "nEmbd", &num(t.n_embd));
+    set(&o, "headDim", &num(t.n_embd / t.n_head.max(1)));
+    // With a KV cache a full q_len only happens on the prompt prefill; that is
+    // the one step with a whole triangular matrix to draw.
+    set(&o, "isPrefill", &JsValue::from_bool(t.q_len > 1));
+    set(&o, "embedding", &f32a(&t.embedding));
+
+    let attn = js_sys::Array::new_with_length(t.attn.len() as u32);
+    for (i, a) in t.attn.iter().enumerate() {
+        let e = js_sys::Object::new();
+        set(&e, "layer", &num(a.layer));
+        set(&e, "nHead", &num(a.n_head));
+        set(&e, "qLen", &num(a.q_len));
+        set(&e, "kvLen", &num(a.kv_len));
+        set(&e, "probs", &f32a(&a.probs));
+        attn.set(i as u32, e.into());
+    }
+    set(&o, "attn", &attn);
+
+    let detail = js_sys::Array::new_with_length(t.detail.len() as u32);
+    for (i, d) in t.detail.iter().enumerate() {
+        let e = js_sys::Object::new();
+        set(&e, "layer", &num(d.layer));
+        set(&e, "q", &f32a(&d.q));
+        set(&e, "k", &f32a(&d.k));
+        set(&e, "v", &f32a(&d.v));
+        set(&e, "mlpHidden", &f32a(&d.mlp_hidden));
+        set(&e, "blockOut", &f32a(&d.block_out));
+        detail.set(i as u32, e.into());
+    }
+    set(&o, "detail", &detail);
+
+    // Decoded here rather than in JS: the tokenizer is Rust's, and the page
+    // has no way to turn an id back into text on its own.
+    let top = js_sys::Array::new_with_length(t.top.len() as u32);
+    for (i, (id, p)) in t.top.iter().enumerate() {
+        let e = js_sys::Object::new();
+        set(&e, "id", &num(*id as usize));
+        set(&e, "token", &JsValue::from_str(&tokenizer.decode(&[*id])));
+        set(&e, "p", &JsValue::from_f64(*p as f64));
+        top.set(i as u32, e.into());
+    }
+    set(&o, "top", &top);
+    o.into()
 }
 
 /// A GPT-2 model + tokenizer on a WebGPU device, driven from JavaScript.
@@ -215,6 +286,87 @@ impl WasmGpt2 {
             )
             .await
             .map_err(js_err)
+    }
+
+    /// [`WasmGpt2::generate`] plus a full calculation trace: after every step
+    /// — including the prompt prefill — `on_trace(trace)` fires once with a
+    /// plain JS object carrying what the model actually computed.
+    ///
+    /// | field | type |
+    /// | --- | --- |
+    /// | `qLen`, `kvLen`, `nHead`, `nEmbd`, `headDim` | number |
+    /// | `isPrefill` | boolean (`qLen > 1`) |
+    /// | `embedding` | `Float32Array` `[qLen × nEmbd]` |
+    /// | `attn` | `[{ layer, nHead, qLen, kvLen, probs }]`, every block |
+    /// | `detail` | `[{ layer, q, k, v, mlpHidden, blockOut }]`, `detail_layers` of them |
+    /// | `top` | `[{ id, token, p }]`, ranked |
+    ///
+    /// `detail_layers` is the cost knob: 0 is exactly
+    /// [`WasmGpt2::generate_with_attention`]'s readback. The expensive call is
+    /// the prefill, where `qLen` is the whole prompt; every decode step after
+    /// it has `qLen == 1`.
+    #[allow(clippy::too_many_arguments)] // a wasm-bindgen export: JS has no
+    // named arguments, and an options object would only move the list into JS.
+    pub async fn generate_with_trace(
+        &self,
+        prompt: &str,
+        max_new_tokens: usize,
+        top_k: usize,
+        temperature: f32,
+        seed: u64,
+        on_text: &js_sys::Function,
+        on_trace: &js_sys::Function,
+        detail_layers: usize,
+        top_n: usize,
+    ) -> Result<String, JsValue> {
+        let sampling = if top_k == 0 {
+            Sampling::Greedy
+        } else {
+            Sampling::TopK {
+                k: top_k,
+                temperature,
+                seed,
+            }
+        };
+        let this = JsValue::NULL;
+        self.model
+            .generate_async_trace(
+                &self.tokenizer,
+                prompt,
+                max_new_tokens,
+                sampling,
+                |s| match on_text.call1(&this, &JsValue::from_str(s)) {
+                    Ok(v) if v.is_falsy() && !v.is_undefined() && !v.is_null() => {
+                        std::ops::ControlFlow::Break(())
+                    }
+                    _ => std::ops::ControlFlow::Continue(()),
+                },
+                Some(|t: &StepTrace| {
+                    // A failing visualization callback must not abort
+                    // generation; the text is the point.
+                    let _ = on_trace.call1(&this, &trace_to_js(t, &self.tokenizer));
+                }),
+                detail_layers,
+                top_n,
+            )
+            .await
+            .map_err(js_err)
+    }
+
+    /// One string per token of `prompt`, in order — the explainer's column
+    /// labels, and the only way a page can know where this model's token
+    /// boundaries fall.
+    pub fn tokenize_display(&self, prompt: &str) -> Result<js_sys::Array, JsValue> {
+        let ids = self.tokenizer.encode(prompt).map_err(js_err)?;
+        Ok(self.decode_ids(&ids))
+    }
+
+    /// Display strings for arbitrary ids — one per id, decoded individually so
+    /// each stays addressable as a column or a bar label.
+    pub fn decode_ids(&self, ids: &[u32]) -> js_sys::Array {
+        ids.iter()
+            .map(|id| JsValue::from_str(&self.tokenizer.decode(&[*id])))
+            .collect()
     }
 
     /// Greedy continuation as raw token ids — used by the Stage 11 gate to

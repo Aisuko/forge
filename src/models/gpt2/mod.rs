@@ -129,6 +129,93 @@ pub struct AttnStep {
     pub probs: Vec<f32>,
 }
 
+/// One block's Q/K/V, MLP and output tensors for one step, read back from the
+/// device. Captured only for the first `detail_layers` blocks — the expensive
+/// kinds — while [`AttnStep`] is captured for every block.
+///
+/// `q`/`k`/`v` are the tensors for the *new* positions only (`[n_head, q_len,
+/// head_dim]`), which is what the step computed: the older keys and values
+/// live in the cache and were never recomputed.
+#[derive(Debug, Clone)]
+pub struct LayerDetail {
+    pub layer: usize,
+    /// `[n_head, q_len, head_dim]`
+    pub q: Vec<f32>,
+    pub k: Vec<f32>,
+    pub v: Vec<f32>,
+    /// `[q_len, 4 * n_embd]`, post-GELU.
+    pub mlp_hidden: Vec<f32>,
+    /// `[q_len, n_embd]`, after the second residual add.
+    pub block_out: Vec<f32>,
+}
+
+/// Everything one decode step computed, read back in a single batched round
+/// trip. A strict superset of [`AttnStep`]: `attn` is exactly what
+/// [`Gpt2::logits_step_attn_async`] reports for the same step.
+#[derive(Debug, Clone)]
+pub struct StepTrace {
+    /// Query positions in this step: the whole prompt on prefill, 1 per decode.
+    pub q_len: usize,
+    /// Past positions attended to, including the queries themselves.
+    pub kv_len: usize,
+    pub n_head: usize,
+    pub n_embd: usize,
+    /// `[q_len, n_embd]` — token + position embedding, before block 0.
+    /// Empty when `detail_layers` is 0.
+    pub embedding: Vec<f32>,
+    /// Every block, in layer order.
+    pub attn: Vec<AttnStep>,
+    /// The first `detail_layers` blocks, in layer order.
+    pub detail: Vec<LayerDetail>,
+    /// Top-n `(token id, probability)`, most likely first. Empty when `top_n`
+    /// is 0.
+    pub top: Vec<(u32, f32)>,
+}
+
+/// What a captured tensor is, so the batched readback can be interpreted
+/// without guessing from rank.
+#[derive(Debug, Clone, Copy)]
+enum ProbeKind {
+    Embedding,
+    Query { layer: usize },
+    Key { layer: usize },
+    Value { layer: usize },
+    Attention { layer: usize },
+    MlpHidden { layer: usize },
+    BlockOut { layer: usize },
+}
+
+/// Capture request + accumulator, threaded through the forward pass.
+///
+/// Every `push` is an `Arc` clone of a tensor the step computes anyway, so the
+/// probing and non-probing paths run identical arithmetic. `detail_layers`
+/// bounds the expensive kinds; `Attention` is captured for every layer
+/// regardless, because the folded block stack still needs it.
+struct Probe {
+    detail_layers: usize,
+    kinds: Vec<ProbeKind>,
+    tensors: Vec<Tensor>,
+}
+
+impl Probe {
+    fn new(detail_layers: usize) -> Self {
+        Probe {
+            detail_layers,
+            kinds: Vec::new(),
+            tensors: Vec::new(),
+        }
+    }
+
+    fn detail(&self, layer: usize) -> bool {
+        layer < self.detail_layers
+    }
+
+    fn push(&mut self, kind: ProbeKind, t: &Tensor) {
+        self.kinds.push(kind);
+        self.tensors.push(t.clone());
+    }
+}
+
 /// Preallocated per-layer K/V tensors (`[n_head, n_ctx, head_dim]`) for
 /// incremental decode. `len` positions are filled; new tokens append.
 pub struct KvCache {
@@ -270,22 +357,31 @@ impl Gpt2 {
     /// Attention over new tokens only, appending their K/V to the cache and
     /// attending to all `len + t` cached positions.
     ///
-    /// `probe`, when present, collects the post-softmax probabilities — an
-    /// `Arc` handle to a tensor that is computed regardless, so the probing
-    /// and non-probing paths run identical arithmetic.
+    /// `probe`, when present, collects the post-softmax probabilities — and,
+    /// for a detail layer, Q/K/V as well. Every capture is an `Arc` handle to
+    /// a tensor that is computed regardless, so the probing and non-probing
+    /// paths run identical arithmetic.
+    #[allow(clippy::too_many_arguments)] // the cache slots and the probe are
+    // all per-call state; bundling them would only move the argument list.
     fn attention_cached(
         &self,
+        layer: usize,
         block: &Block,
         h: &Tensor,
         k_cache: &mut Tensor,
         v_cache: &mut Tensor,
         len: usize,
-        probe: Option<&mut Vec<Tensor>>,
+        mut probe: Option<&mut Probe>,
     ) -> Result<Tensor> {
         let n_head = self.config.n_head;
         let hd = self.config.n_embd / n_head;
         let qkv = block.attn_qkv.forward(h)?; // [t, 3c]
         let (q, k, v) = ops::split_heads(&qkv, n_head)?; // [h, t, hd]
+        if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+            p.push(ProbeKind::Query { layer }, &q);
+            p.push(ProbeKind::Key { layer }, &k);
+            p.push(ProbeKind::Value { layer }, &v);
+        }
         let t = q.shape().dim(1);
         ops::kv_append(k_cache, &k, len)?;
         ops::kv_append(v_cache, &v, len)?;
@@ -302,8 +398,8 @@ impl Gpt2 {
             },
         )?; // [h, t, kv_len]
         let att = ops::softmax(&att, true, len)?; // off = kv_len - t
-        if let Some(probe) = probe {
-            probe.push(att.clone());
+        if let Some(p) = probe {
+            p.push(ProbeKind::Attention { layer }, &att);
         }
         let y = ops::matmul(
             &att,
@@ -347,12 +443,13 @@ impl Gpt2 {
 
     /// Hidden states for `ids` (new tokens) continuing from `cache`;
     /// appends their K/V and advances `cache.len`. `probe` is threaded through
-    /// to [`Gpt2::attention_cached`] and collects one tensor per block.
+    /// to [`Gpt2::attention_cached`] and collects the embedding, every block's
+    /// attention, and the detail layers' Q/K/V, MLP and block outputs.
     fn hidden_cached(
         &self,
         ids: &[u32],
         cache: &mut KvCache,
-        mut probe: Option<&mut Vec<Tensor>>,
+        mut probe: Option<&mut Probe>,
     ) -> Result<Tensor> {
         if ids.is_empty() {
             return Err(ForgeError::Shape("empty token sequence".into()));
@@ -369,12 +466,19 @@ impl Gpt2 {
         let device = self.emb.wpe.device();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, pos)?;
-        for (block, (kc, vc)) in self
+        // The embedding is only worth a round trip when the detail stages are
+        // being drawn; `detail_layers == 0` is the cheap attention-only probe.
+        if let Some(p) = probe.as_deref_mut().filter(|p| p.detail_layers > 0) {
+            p.push(ProbeKind::Embedding, &x);
+        }
+        for (layer, (block, (kc, vc))) in self
             .blocks
             .iter()
             .zip(cache.k.iter_mut().zip(cache.v.iter_mut()))
+            .enumerate()
         {
             let attn_out = self.attention_cached(
+                layer,
                 block,
                 &block.ln_1.forward(&x)?,
                 kc,
@@ -384,10 +488,15 @@ impl Gpt2 {
             )?;
             x = ops::add(&x, &attn_out)?;
             let mlp_in = block.ln_2.forward(&x)?;
-            let mlp_out = block
-                .mlp_proj
-                .forward(&ops::gelu(&block.mlp_fc.forward(&mlp_in)?)?)?;
+            let mlp_hidden = ops::gelu(&block.mlp_fc.forward(&mlp_in)?)?;
+            if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+                p.push(ProbeKind::MlpHidden { layer }, &mlp_hidden);
+            }
+            let mlp_out = block.mlp_proj.forward(&mlp_hidden)?;
             x = ops::add(&x, &mlp_out)?;
+            if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+                p.push(ProbeKind::BlockOut { layer }, &x);
+            }
         }
         cache.len += ids.len();
         self.ln_f.forward(&x)
@@ -443,46 +552,106 @@ impl Gpt2 {
     /// [`Gpt2::logits_step_async`] plus every block's attention probabilities
     /// for this step, in layer order.
     ///
-    /// The logits are identical to `logits_step_async` — the probe only reads
-    /// tensors the step computes anyway. The whole step is enqueued first, and
-    /// the logits and every block's attention come back in a *single* batched
-    /// readback: one at a time they cost ~2.7x the decode itself, since the
-    /// price is the round trip rather than the ~36 KB.
+    /// The cheap probe: exactly [`Gpt2::logits_step_trace_async`] with no
+    /// detail layers and no top-n, so the two can never disagree about what
+    /// the model attended with.
     pub async fn logits_step_attn_async(
         &self,
         ids: &[u32],
         cache: &mut KvCache,
     ) -> Result<(Vec<f32>, Vec<AttnStep>)> {
-        let mut probe = Vec::with_capacity(self.config.n_layer + 1);
+        let (logits, trace) = self.logits_step_trace_async(ids, cache, 0, 0).await?;
+        Ok((logits, trace.attn))
+    }
+
+    /// [`Gpt2::logits_step_async`] plus a full calculation trace for this step:
+    /// the embedding, every block's attention, the first `detail_layers`
+    /// blocks' Q/K/V, post-GELU MLP and block output, and the `top_n` most
+    /// likely next tokens with their probabilities.
+    ///
+    /// The logits are identical to `logits_step_async` — the probe only reads
+    /// tensors the step computes anyway. The whole step is enqueued first, and
+    /// every captured tensor comes back in a *single* batched readback: one at
+    /// a time they cost ~2.7x the decode itself, since the price is the round
+    /// trip rather than the bytes.
+    ///
+    /// `detail_layers` is the cost knob. At 0 this is the attention-only probe
+    /// and nothing but the post-softmax tensors is read. Each detail layer adds
+    /// `q_len * (3 * n_embd + 5 * n_embd)` floats, so a long prefill is the
+    /// only expensive call — a decode step is `q_len == 1`.
+    pub async fn logits_step_trace_async(
+        &self,
+        ids: &[u32],
+        cache: &mut KvCache,
+        detail_layers: usize,
+        top_n: usize,
+    ) -> Result<(Vec<f32>, StepTrace)> {
+        let q_len = ids.len();
+        let detail_layers = detail_layers.min(self.config.n_layer);
+        let mut probe = Probe::new(detail_layers);
         let h = self.hidden_cached(ids, cache, Some(&mut probe))?;
-        let last = h.narrow_rows(ids.len() - 1, 1)?;
-        // Logits last, so `probe` stays in layer order and the shapes below
-        // line up with the tensors that produced them.
-        let shapes: Vec<Vec<usize>> = probe.iter().map(|t| t.shape().dims().to_vec()).collect();
-        probe.push(ops::matmul_chunked_transb(
+        let last = h.narrow_rows(q_len - 1, 1)?;
+        let Probe {
+            kinds,
+            mut tensors,
+            detail_layers,
+        } = probe;
+        // Logits last, so the kinds stay aligned with the tensors that
+        // produced them and the shapes below line up.
+        let shapes: Vec<Vec<usize>> = tensors.iter().map(|t| t.shape().dims().to_vec()).collect();
+        tensors.push(ops::matmul_chunked_transb(
             &last,
             &self.emb.wte_chunks,
             1.0,
         )?);
 
-        let mut read = Tensor::to_vec_f32_batch(&probe).await?;
+        let mut read = Tensor::to_vec_f32_batch(&tensors).await?;
         let logits = read.pop().expect("logits were pushed last");
-        let mut steps = Vec::with_capacity(read.len());
-        for (layer, (probs, dims)) in read.into_iter().zip(shapes).enumerate() {
-            let [n_head, q_len, kv_len] = dims[..] else {
-                return Err(ForgeError::Shape(format!(
-                    "attention probe expected rank 3, got {dims:?}"
-                )));
-            };
-            steps.push(AttnStep {
-                layer,
-                n_head,
-                q_len,
-                kv_len,
-                probs,
-            });
+
+        let mut trace = StepTrace {
+            q_len,
+            kv_len: cache.len,
+            n_head: self.config.n_head,
+            n_embd: self.config.n_embd,
+            embedding: Vec::new(),
+            attn: Vec::with_capacity(self.config.n_layer),
+            detail: (0..detail_layers)
+                .map(|layer| LayerDetail {
+                    layer,
+                    q: Vec::new(),
+                    k: Vec::new(),
+                    v: Vec::new(),
+                    mlp_hidden: Vec::new(),
+                    block_out: Vec::new(),
+                })
+                .collect(),
+            top: top_probs(&logits, top_n),
+        };
+        for ((kind, dims), data) in kinds.iter().zip(&shapes).zip(read) {
+            match *kind {
+                ProbeKind::Embedding => trace.embedding = data,
+                ProbeKind::Query { layer } => trace.detail[layer].q = data,
+                ProbeKind::Key { layer } => trace.detail[layer].k = data,
+                ProbeKind::Value { layer } => trace.detail[layer].v = data,
+                ProbeKind::MlpHidden { layer } => trace.detail[layer].mlp_hidden = data,
+                ProbeKind::BlockOut { layer } => trace.detail[layer].block_out = data,
+                ProbeKind::Attention { layer } => {
+                    let [n_head, q_len, kv_len] = dims[..] else {
+                        return Err(ForgeError::Shape(format!(
+                            "attention probe expected rank 3, got {dims:?}"
+                        )));
+                    };
+                    trace.attn.push(AttnStep {
+                        layer,
+                        n_head,
+                        q_len,
+                        kv_len,
+                        probs: data,
+                    });
+                }
+            }
         }
-        Ok((logits, steps))
+        Ok((logits, trace))
     }
 
     // ---- training (roadmap v4, Stages 8-10) ----
@@ -962,8 +1131,44 @@ impl Gpt2 {
         prompt: &str,
         max_new_tokens: usize,
         sampling: Sampling,
+        on_text: impl FnMut(&str) -> ControlFlow<()>,
+        on_attn: Option<impl FnMut(&[AttnStep])>,
+    ) -> Result<String> {
+        // No detail layers and no top-n: the attention-only probe, which is
+        // what this signature has always promised.
+        self.generate_async_trace(
+            tokenizer,
+            prompt,
+            max_new_tokens,
+            sampling,
+            on_text,
+            on_attn.map(|mut f| move |t: &StepTrace| f(&t.attn)),
+            0,
+            0,
+        )
+        .await
+    }
+
+    /// [`Gpt2::generate_async_probe`] with the full calculation trace:
+    /// `on_trace`, when present, fires once per step — including the prompt
+    /// prefill, whose `q_len` is the prompt length rather than 1 — with
+    /// everything [`Gpt2::logits_step_trace_async`] captured.
+    ///
+    /// `None` is byte-for-byte the non-probing path. With `Some`, the
+    /// generated text is still identical: the probe reads tensors the step
+    /// already computed and changes no arithmetic.
+    #[allow(clippy::too_many_arguments)] // sampling, two sinks and the two
+    // cost knobs; a builder here would be ceremony over a call made twice.
+    pub async fn generate_async_trace(
+        &self,
+        tokenizer: &impl Tokenizer,
+        prompt: &str,
+        max_new_tokens: usize,
+        sampling: Sampling,
         mut on_text: impl FnMut(&str) -> ControlFlow<()>,
-        mut on_attn: Option<impl FnMut(&[AttnStep])>,
+        mut on_trace: Option<impl FnMut(&StepTrace)>,
+        detail_layers: usize,
+        top_n: usize,
     ) -> Result<String> {
         // The streaming helper takes a plain sink, so the break request is
         // captured here and checked once the delta has been forwarded. A Cell
@@ -983,7 +1188,9 @@ impl Gpt2 {
             Sampling::Greedy => None,
         };
         let mut cache = self.new_cache()?;
-        let mut logits = self.step_async(&ids, &mut cache, &mut on_attn).await?; // prompt prefill
+        let mut logits = self
+            .step_async(&ids, &mut cache, &mut on_trace, detail_layers, top_n)
+            .await?; // prompt prefill
         // Stream over the raw byte-level decode (append-only per token),
         // emitting only its valid-UTF-8 prefix: a multi-byte character split
         // across BPE tokens is held back until its trailing bytes arrive.
@@ -1003,22 +1210,28 @@ impl Gpt2 {
             if ids.len() >= self.config.n_ctx {
                 break;
             }
-            logits = self.step_async(&[next], &mut cache, &mut on_attn).await?; // single-token decode
+            logits = self
+                .step_async(&[next], &mut cache, &mut on_trace, detail_layers, top_n)
+                .await?; // single-token decode
         }
         Ok(tokenizer.decode(&ids))
     }
 
-    /// One decode step, forwarding attention to `on_attn` when probing.
+    /// One decode step, forwarding the trace to `on_trace` when probing.
     async fn step_async(
         &self,
         ids: &[u32],
         cache: &mut KvCache,
-        on_attn: &mut Option<impl FnMut(&[AttnStep])>,
+        on_trace: &mut Option<impl FnMut(&StepTrace)>,
+        detail_layers: usize,
+        top_n: usize,
     ) -> Result<Vec<f32>> {
-        match on_attn {
+        match on_trace {
             Some(f) => {
-                let (logits, steps) = self.logits_step_attn_async(ids, cache).await?;
-                f(&steps);
+                let (logits, trace) = self
+                    .logits_step_trace_async(ids, cache, detail_layers, top_n)
+                    .await?;
+                f(&trace);
                 Ok(logits)
             }
             None => self.logits_step_async(ids, cache).await,
@@ -1057,6 +1270,34 @@ fn emit_valid_prefix(bytes: &[u8], mut sent: usize, on_text: &mut impl FnMut(&st
             }
         }
     }
+}
+
+/// The `n` most likely next tokens and their probabilities, most likely first.
+///
+/// A full softmax over the row, so a bar labelled 0.21 means 21% of the model's
+/// probability mass — not 21% of whatever survived a top-k truncation. This is
+/// the model's own distribution, before any sampling temperature: the sampler
+/// picks from it, but the picture is of the model.
+///
+/// No GPU work: the logits were already read back for sampling.
+fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
+    let n = n.min(logits.len());
+    if n == 0 {
+        return Vec::new();
+    }
+    let by_logit = |a: &u32, b: &u32| logits[*b as usize].total_cmp(&logits[*a as usize]);
+    let mut idx: Vec<u32> = (0..logits.len() as u32).collect();
+    // Partition first: `n` is ~24 and the vocabulary is up to 50257, so a full
+    // sort per token would be the most expensive thing in the trace.
+    idx.select_nth_unstable_by(n - 1, by_logit);
+    idx.truncate(n);
+    idx.sort_unstable_by(by_logit);
+
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let total: f32 = logits.iter().map(|l| (l - max).exp()).sum();
+    idx.into_iter()
+        .map(|i| (i, (logits[i as usize] - max).exp() / total))
+        .collect()
 }
 
 fn bias(l: &Linear) -> Result<&Tensor> {
