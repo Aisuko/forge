@@ -22,6 +22,33 @@ const TOP_N = 24;
 // it is skipped and the attention triangle carries the section alone.
 const MAX_DETAIL_PROMPT = 96;
 
+// ── The stage cover ───────────────────────────────────────────────────────
+// The stage draws an empty scaffold until a trace arrives, and the control
+// that produces one is a button in the card underneath it. Anyone who reads
+// "Watch it think" without scrolling past the whole stage sees grey cells and
+// no explanation, so the cover carries the section's state — idle, loading,
+// failed — and starts the run itself. It is looked up on each call because
+// startStage() removes the whole stage on a WebGL failure.
+
+/** True once the stage has numbers of its own; the cover never returns after. */
+let stageLive = false;
+
+/** Show the cover with `text`, offering the Run button only when it can help. */
+function stageState(text, offerRun) {
+  const idle = $("stage-idle");
+  if (!idle || stageLive) return;
+  idle.hidden = false;
+  $("stage-idle-text").textContent = text;
+  $("stage-idle-run").hidden = !offerRun;
+}
+
+/** Uncover the stage for good — called on the first trace it can draw. */
+function stageGoLive() {
+  stageLive = true;
+  const idle = $("stage-idle");
+  if (idle) idle.hidden = true;
+}
+
 /** Replace the demo with an explanatory card. Never leaves an empty box. */
 function explain(title, body, retry) {
   panel.innerHTML = "";
@@ -168,6 +195,13 @@ if (!("gpu" in navigator)) {
       "else on this page works without it, and the model runs natively with " +
       "cargo run --release --example generate.",
   );
+  // Say it on the stage too. Left as it was, the scaffold would sit there
+  // empty and unexplained for exactly the visitors who can never fill it.
+  stageState(
+    "This browser has no WebGPU, so the model cannot run here and the " +
+      "stage stays empty. Chrome or Edge 113+, or Safari 26+, will fill it.",
+    false,
+  );
 } else {
   app.hidden = false;
   wire();
@@ -175,7 +209,11 @@ if (!("gpu" in navigator)) {
 
 function wire() {
   const status = (t) => {
-    $("demo-status").textContent = t;
+    // explain() can replace the whole panel, and this element with it.
+    const el = $("demo-status");
+    if (el) el.textContent = t;
+    // Same message on the stage until the stage has numbers to show instead.
+    stageState(t, false);
   };
   const progress = (frac) => {
     const wrap = $("demo-progress-wrap");
@@ -279,6 +317,10 @@ function wire() {
 
   $("demo-prompt").addEventListener("input", checkCharset);
 
+  // One run path, two buttons: the cover's button drives the real one so the
+  // prompt, token count and sampling below always apply.
+  $("stage-idle-run")?.addEventListener("click", () => $("demo-run").click());
+
   $("demo-stop").addEventListener("click", () => {
     stop = true;
     status("stopping…");
@@ -287,13 +329,20 @@ function wire() {
   $("demo-run").addEventListener("click", async () => {
     const run = $("demo-run");
     run.disabled = true;
+    // Pressing Run twice must not offer a third press from the cover.
+    stageState("starting…", false);
     try {
       if (!model) {
         // One in-flight load, however many times Run is pressed.
         loading = loading || load();
         model = await loading;
       }
-      if (!checkCharset()) return;
+      if (!checkCharset()) {
+        // Nothing will run, so the cover has to hand the visitor back a way
+        // to try again once they have fixed the prompt.
+        stageState($("demo-charset").textContent, true);
+        return;
+      }
 
       const detailLayers = Math.min(DETAIL, model.n_layer());
       const folded = model.n_layer() - detailLayers;
@@ -361,6 +410,8 @@ function wire() {
       const onTrace = (trace) => {
         // A failing visualization must never take generation down with it.
         try {
+          // The first trace is the moment the stage stops being a scaffold.
+          if (stage) stageGoLive();
           stage?.pushTrace(trace);
           renderProbs($("stage-probs"), trace.top);
           for (const a of trace.attn) {
@@ -422,12 +473,18 @@ function wire() {
             "WebGPU disabled at chrome://flags.",
           () => location.reload(),
         );
+        // explain() just removed the Run button this cover points at, so the
+        // reload is the only offer left to make.
+        stageState(`The model could not start — ${msg}`, false);
       } else {
         status(`error: ${msg}`);
       }
     } finally {
-      $("demo-run").disabled = false;
-      $("demo-stop").hidden = true;
+      // explain() may have replaced the panel, taking both buttons with it.
+      const runBtn = $("demo-run");
+      if (runBtn) runBtn.disabled = false;
+      const stopBtn = $("demo-stop");
+      if (stopBtn) stopBtn.hidden = true;
     }
   });
 

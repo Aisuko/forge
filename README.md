@@ -4,17 +4,11 @@
 
 ## What is it
 
-A nanoGPT-class GPT-2 in Rust with two backends: **WebGPU** (Vulkan / Metal /
-D3D12 / browser) and a **CPU** reference. Train a small Shakespeare model from
-scratch, or load real OpenAI GPT-2 124M weights — same model code on either
-device.
+Forge is the floor a dedicated, vendor-independent runtime has to stand on before it can carry real research — and eventually, local, safety-focused AI work — on hardware you control end to end.
 
 ## Why
 
-Running a transformer usually means Python, CUDA, and a stack of dependencies.
-Forge is a single Rust crate that trains and infers on any GPU wgpu supports —
-including a browser tab — with a CPU path that is mathematically identical, so
-every kernel is verifiable against it.
+Running a transformer usually means Python, a CUDA toolchain, and a dependency stack tied to one vendor's hardware. Forge is a single Rust crate that trains and infers on any GPU wgpu reaches — including a browser tab — with no CUDA, no Python interpreter, and no server round trip. That's not just a portability trick: it's the floor a dedicated, vendor-independent runtime has to stand on before it can carry real research, and eventually local, safety-focused AI work, on hardware you control end to end.
 
 ## Run it
 

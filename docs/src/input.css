@@ -199,6 +199,26 @@
     @apply bottom-3;
   }
 
+  /* The cover over the empty scaffold: what the stage is waiting for, and
+     the button that starts it. Frosted rather than opaque, so the diagram
+     underneath is visibly the thing about to fill in.
+
+     No z-index: it is the last positioned child of .stage-wrap, so it already
+     paints over the canvas and the overlay — and raising it would put it over
+     the "Next character" card, which is a sibling of the stage, not a child. */
+  .stage-idle {
+    @apply absolute inset-0 flex flex-col items-center justify-center
+           bg-ink-50/85 p-6 text-center backdrop-blur-[2px]
+           dark:bg-ink-950/85;
+  }
+
+  /* `display: flex` from the rule above beats [hidden]'s display:none, so
+     demo.js toggling the `hidden` property would do nothing without this —
+     the same trap the #demo-charset comment in index.html names. */
+  .stage-idle[hidden] {
+    display: none;
+  }
+
   /* A sibling of .stage-wrap, not a child: below md it has to leave the
      fixed-height, overflow-hidden stage and sit under it. */
   .stage-side {

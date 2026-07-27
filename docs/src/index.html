@@ -6,9 +6,11 @@
     <title>Forge — how little does it take to run a language model?</title>
     <meta
       name="description"
-      content="Forge is a research project into the floor of local inference: one Rust crate,
-               23 WGSL kernels, no CUDA toolchain and no Python runtime. Watch a GPT compute
-               attention in 3D on your own GPU, and measure what a token costs there."
+      content="Forge is the floor a dedicated, vendor-independent runtime has to stand on
+               before it can carry real research — and eventually, local, safety-focused AI
+               work — on hardware you control end to end. One Rust crate, 23 WGSL kernels,
+               no CUDA toolchain and no Python runtime. Watch a GPT compute attention in 3D
+               on your own GPU, and measure what a token costs there."
     />
     <!-- Relative, never root-absolute: the site is served from /forge/, not /. -->
     <link rel="stylesheet" href="./assets/app.css" />
@@ -59,10 +61,9 @@
           <span class="text-forge-600">run a language model</span>?
         </h1>
         <p class="lede text-lg">
-          Forge is a research project into the floor of local inference: how
-          small the stack can get and still be a real GPT. One Rust crate,
-          23 WGSL kernels, no CUDA toolchain and no Python runtime — training
-          and inference on the same tensors, on whatever GPU you already own.
+          Forge is the floor a dedicated, vendor-independent runtime has to
+          stand on before it can carry real research — and eventually, local,
+          safety-focused AI work — on hardware you control end to end.
         </p>
         <p class="lede text-lg">
           Scroll down and it will run on yours, and tell you how fast.
@@ -131,6 +132,30 @@
                 drag to rotate · scroll to zoom · hover any cell for its value
               </p>
               <p id="stage-readout" class="stage-readout" role="status"></p>
+
+              <!-- Until the model runs, the stage is a scaffold of empty
+                   cells and the only control that fills it is the Run button
+                   in the card *below* it. A visitor who has not scrolled that
+                   far sees a grey diagram with no numbers and no reason given
+                   — the section reads as broken. This cover says what is
+                   missing, carries the loading and error state, and starts
+                   the same run. Removed for good once real numbers land. -->
+              <div id="stage-idle" class="stage-idle">
+                <p class="text-sm font-medium">Nothing has been computed yet</p>
+                <p
+                  id="stage-idle-text"
+                  class="mt-1 max-w-md text-xs text-ink-500 dark:text-ink-300"
+                  role="status"
+                  aria-live="polite"
+                >
+                  Every cell here is filled in by the model as it runs. Start
+                  it and the numbers arrive one character at a time — 43 MB of
+                  weights, fetched once and then cached by your browser.
+                </p>
+                <button id="stage-idle-run" class="btn-primary mt-4" type="button">
+                  Run the model
+                </button>
+              </div>
             </div>
 
             <div id="stage-side" class="stage-side">
