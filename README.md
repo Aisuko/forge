@@ -10,6 +10,15 @@ Forge is the floor a dedicated, vendor-independent runtime has to stand on befor
 
 Running a transformer usually means Python, a CUDA toolchain, and a dependency stack tied to one vendor's hardware. Forge is a single Rust crate that trains and infers on any GPU wgpu reaches — including a browser tab — with no CUDA, no Python interpreter, and no server round trip. That's not just a portability trick: it's the floor a dedicated, vendor-independent runtime has to stand on before it can carry real research, and eventually local, safety-focused AI work, on hardware you control end to end.
 
+## Demo
+
+Try by using your own hardware at https://aisuko.github.io/forge/
+
+
+https://github.com/user-attachments/assets/d3487d8f-40a1-4c84-9f98-d4a7c5ce1550
+
+
+
 ## Run it
 
 ```bash
