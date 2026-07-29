@@ -29,9 +29,6 @@ backend. When you add or change an op, you almost always touch it in three
 places: the CPU reference, the WGSL kernel, and (if the op is new) the
 shape-checked dispatcher in `src/ops.rs`.
 
-See the roadmap docs under `.claude/commands/Forge_Roadmap_V*.md` for the
-staged plan (inference → KV-cache → autograd → training → wasm/browser) and
-the current stage.
 
 ## Project structure
 
@@ -207,14 +204,10 @@ If you're touching the browser/wasm path, build and serve the demo:
 
 ## Making a change
 
-1. Check the current stage in the roadmap
-   (`.claude/commands/Forge_Roadmap_V4.md`) so new work fits the intended
-   sequencing (e.g. don't build training features before the autograd gate
-   is green).
-2. If you add or modify an op: implement it in `backend/cpu.rs`, add/update
+1. If you add or modify an op: implement it in `backend/cpu.rs`, add/update
    the matching WGSL kernel in `shaders/`, wire it through `ops.rs`, and add
    a parity case in `tests/op_parity.rs`.
-3. Run `./scripts/ci_local.sh full` (or just let the `pre-push` hook do it)
+2. Run `./scripts/ci_local.sh full` (or just let the `pre-push` hook do it)
    and, if relevant, the manual CPU/WGPU generation comparison above.
-4. Keep changes scoped to what GPT-2 needs — this project deliberately
+3. Keep changes scoped to what GPT-2 needs — this project deliberately
    avoids generality for its own sake.

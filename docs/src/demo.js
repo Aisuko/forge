@@ -19,8 +19,11 @@ const DETAIL = 1;
 // Probability bars to rank. 24 fits the panel; the char vocabulary is 65.
 const TOP_N = 24;
 // Above this the prefill detail readback is worth megabytes for one frame, so
-// it is skipped and the attention triangle carries the section alone.
-const MAX_DETAIL_PROMPT = 96;
+// it is skipped and the attention triangle carries the section alone. Lowered
+// from 96 when the trace grew the LayerNorm, raw-score and projection
+// captures: at 96 positions the prefill readback is 3.75 MB, at 64 it is 2.16.
+// The stage draws the last 8 positions either way, so nothing visible is lost.
+const MAX_DETAIL_PROMPT = 64;
 
 // ── The stage cover ───────────────────────────────────────────────────────
 // The stage draws an empty scaffold until a trace arrives, and the control
@@ -75,6 +78,13 @@ function explain(title, body, retry) {
 
 const glyph = (s) => (s ?? "").replace(/\n/g, "↵").replace(/ /g, "␣") || "·";
 
+/** A number input's value, or `fallback` when it is empty or nonsense. */
+function clampNum(raw, lo, hi, fallback) {
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(hi, Math.max(lo, v));
+}
+
 /** The model's next-token distribution, as bars. */
 function renderProbs(el, top) {
   if (!el) return;
@@ -111,9 +121,8 @@ function renderTokens(el, tokens) {
 // independently, and either one missing must still leave a complete page.
 
 let stagePromise = null;
-let scenePromise = null;
 
-/** Start the explainer at most once; resolves to the controller or null. */
+/** Start the pipeline at most once; resolves to the controller or null. */
 function ensureStage() {
   stagePromise = stagePromise || startStage();
   return stagePromise;
@@ -125,18 +134,22 @@ async function startStage() {
   try {
     // three.js is 751 KB and lives behind this call, so it is fetched when
     // the section is reached rather than on first paint.
-    const { createExplainer } = await import("./explainer.js");
-    return createExplainer({
+    const { createPipeline } = await import("./pipeline.js");
+    const pipeline = createPipeline({
       canvas,
       overlay: $("stage-overlay"),
       readout: $("stage-readout"),
+      onStage: showStage,
     });
+    wireStepper(pipeline);
+    return pipeline;
   } catch (e) {
     // No WebGL, or the module itself failed to load. Drop the canvas
     // entirely — an empty rectangle is worse than no rectangle — and show
-    // the panel that says the same thing in words. The probability bars and
-    // the token list beside it are plain HTML and keep working.
-    console.warn("3D explainer unavailable:", e);
+    // the panel that says the same thing in words. The caption strip, the
+    // probability bars and the token list beside it are plain HTML and keep
+    // working.
+    console.warn("3D pipeline unavailable:", e);
     $("stage-wrap")?.remove();
     const fallback = $("stage-fallback");
     if (fallback) fallback.hidden = false;
@@ -144,30 +157,68 @@ async function startStage() {
   }
 }
 
-/**
- * The folded remainder of the stack — the blocks the explainer does not draw
- * in full. Started at most once, and independent of the explainer: scene.js
- * can load and run when explainer.js does not.
- */
-function ensureScene(nLayer) {
-  scenePromise = scenePromise || startScene(nLayer);
-  return scenePromise;
+// ── the walk ──────────────────────────────────────────────────────────────
+// The stepper is DOM; the camera is three.js. They meet here, and only here,
+// so the caption strip is readable prose in index.html rather than strings in
+// the JS bundle.
+
+/** Stage id → its <p>, read once out of the template in index.html. */
+const PROSE = (() => {
+  const t = document.getElementById("stage-prose");
+  const out = {};
+  for (const p of t ? t.content.querySelectorAll("p[data-stage]") : []) {
+    out[p.dataset.stage] = p.innerHTML;
+  }
+  return out;
+})();
+
+let pipelineRef = null;
+
+/** Reflect the walk's position into the caption strip and the counter. */
+function showStage(index, stage) {
+  const count = pipelineRef?.stageCount ?? 15;
+  const counter = $("stage-counter");
+  const title = $("stage-caption-title");
+  const body = $("stage-caption");
+  const slice = $("stage-caption-slice");
+  if (!counter) return;
+  if (index < 0 || !stage) {
+    counter.textContent = `Overview · ${count} stages`;
+    title.textContent = "The whole forward pass";
+    body.innerHTML =
+      "Fifteen stages, from the embedding to the next character. Step " +
+      "through them, or hover any cell at any time to read the number under " +
+      "it.";
+    slice.textContent = "";
+    return;
+  }
+  counter.textContent = `${index + 1} / ${count} · ${stage.name}`;
+  title.textContent = stage.name;
+  body.innerHTML = PROSE[stage.id] || "";
+  slice.textContent = `showing: ${stage.slice}`;
 }
 
-async function startScene(nLayer) {
-  const canvas = $("scene");
-  if (!canvas || nLayer < 1) {
-    $("folded-card")?.remove();
-    return null;
-  }
-  try {
-    const { createStack } = await import("./scene.js");
-    return createStack({ canvas, label: $("scene-label") });
-  } catch (e) {
-    console.warn("folded stack unavailable:", e);
-    $("folded-card")?.remove();
-    return null;
-  }
+function wireStepper(pipeline) {
+  pipelineRef = pipeline;
+  const buttons = ["stage-prev", "stage-next", "stage-overview"].map($);
+  const [prev, next, over] = buttons;
+  if (!prev) return;
+  for (const b of buttons) b.disabled = false;
+  prev.addEventListener("click", () => pipeline.prevStage());
+  next.addEventListener("click", () => pipeline.nextStage());
+  over.addEventListener("click", () => pipeline.overview());
+  // Arrow keys once a stepper button has focus. Bound here rather than to the
+  // document: a visitor typing a prompt is not trying to walk the pipeline.
+  // Not to the canvas either — it is aria-hidden, and making it focusable
+  // would put a stop on the tab order that a screen reader cannot describe.
+  prev.parentElement?.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight") pipeline.nextStage();
+    else if (e.key === "ArrowLeft") pipeline.prevStage();
+    else if (e.key === "Escape") pipeline.overview();
+    else return;
+    e.preventDefault();
+  });
+  showStage(pipeline.stage(), null);
 }
 
 const section = $("demo");
@@ -205,6 +256,34 @@ if (!("gpu" in navigator)) {
 } else {
   app.hidden = false;
   wire();
+}
+
+/**
+ * The shipped model's measured quality, from `model/metrics.json` — written by
+ * scripts/ship_char_model.sh, not typed into this file.
+ *
+ * Silent when the file is missing or malformed: the page must stay correct
+ * when it is served against a model directory that predates the trainer
+ * change, and a stale hard-coded figure is exactly what this replaces.
+ */
+async function showQuality() {
+  const el = $("demo-quality");
+  if (!el) return;
+  try {
+    const m = await fetch("./model/metrics.json").then((r) =>
+      r.ok ? r.json() : null,
+    );
+    if (!m || typeof m.val_loss !== "number") return;
+    const when = m.measured ? ` on ${m.measured}` : "";
+    el.textContent =
+      `Held-out validation loss ${m.val_loss.toFixed(3)} on Tiny Shakespeare, ` +
+      `measured${when} over ${m.val_windows ?? "?"} windows of the 10% this ` +
+      `model never trained on. nanoGPT's published reference for this ` +
+      `configuration is 1.4697.`;
+    el.hidden = false;
+  } catch {
+    // No metrics file, or it is not JSON. Say nothing.
+  }
 }
 
 function wire() {
@@ -317,6 +396,15 @@ function wire() {
 
   $("demo-prompt").addEventListener("input", checkCharset);
 
+  // Live value beside the slider — a bare range input tells you nothing.
+  const temp = $("demo-temp");
+  const tempOut = $("demo-temp-out");
+  const showTemp = () => (tempOut.textContent = Number(temp.value).toFixed(2));
+  temp.addEventListener("input", showTemp);
+  showTemp();
+
+  showQuality();
+
   // One run path, two buttons: the cover's button drives the real one so the
   // prompt, token count and sampling below always apply.
   $("stage-idle-run")?.addEventListener("click", () => $("demo-run").click());
@@ -345,10 +433,9 @@ function wire() {
       }
 
       const detailLayers = Math.min(DETAIL, model.n_layer());
-      const folded = model.n_layer() - detailLayers;
 
-      // Both visualizations must describe the model that is running, not the
-      // defaults they were built with.
+      // The visualisation must describe the model that is running, not the
+      // defaults it was built with.
       const stage = await ensureStage();
       stage?.setConfig({
         nLayer: model.n_layer(),
@@ -357,18 +444,6 @@ function wire() {
         nCtx: model.n_ctx(),
       });
       stage?.reset();
-
-      const scene = await ensureScene(folded);
-      scene?.setConfig({
-        nLayer: folded,
-        // The stage above draws the first `detailLayers` blocks, so this stack
-        // starts at the one after them — counting from 1, as the page does.
-        firstBlock: detailLayers + 1,
-        nHead: model.n_head(),
-        nEmbd: model.n_embd(),
-        nCtx: model.n_ctx(),
-      });
-      scene?.reset();
 
       const prompt = $("demo-prompt").value;
       const tokens = Array.from(model.tokenize_display(prompt));
@@ -386,7 +461,8 @@ function wire() {
 
       // n_ctx is 256; the prompt takes the rest, so cap well below it.
       const n = Math.max(1, Math.min(240, Number($("demo-tokens").value) || 200));
-      const topk = Number($("demo-sampling").value);
+      const topk = clampNum($("demo-topk").value, 0, model.vocab_size(), 12);
+      const temp = clampNum($("demo-temp").value, 0.1, 1.5, 0.8);
       const t0 = performance.now();
       let count = 0;
       let decodeStart = null;
@@ -414,23 +490,6 @@ function wire() {
           if (stage) stageGoLive();
           stage?.pushTrace(trace);
           renderProbs($("stage-probs"), trace.top);
-          for (const a of trace.attn) {
-            if (a.layer < detailLayers) continue;
-            // The folded stack draws the newest query row of each remaining
-            // block, renumbered from 0 so its slabs line up.
-            const last = (a.qLen - 1) * a.kvLen;
-            const row = new Float32Array(a.nHead * a.kvLen);
-            for (let h = 0; h < a.nHead; h++) {
-              row.set(
-                a.probs.subarray(
-                  h * a.qLen * a.kvLen + last,
-                  h * a.qLen * a.kvLen + last + a.kvLen,
-                ),
-                h * a.kvLen,
-              );
-            }
-            scene?.pushAttention(a.layer - detailLayers, a.nHead, row);
-          }
         } catch (e) {
           console.warn("visualization step failed:", e);
         }
@@ -444,7 +503,7 @@ function wire() {
         prompt,
         n,
         topk,
-        0.8,
+        temp,
         BigInt(Date.now() % 100000),
         onText,
         onTrace,

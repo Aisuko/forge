@@ -148,35 +148,35 @@
     will-change: transform;
   }
 
-  .stage-cap {
-    @apply rounded bg-white/70 px-1.5 py-1 text-ink-700 backdrop-blur-[2px]
-           dark:bg-ink-950/70 dark:text-ink-100;
+  /* A station's name, anchored above it. The only prose the canvas carries;
+     everything longer lives in the caption strip below the stage. */
+  .stage-label.is-title {
+    @apply rounded bg-white/70 px-1.5 py-1 font-semibold text-ink-700
+           backdrop-blur-[2px] dark:bg-ink-950/70 dark:text-ink-100;
   }
 
-  .cap-q {
-    color: #4c8dff;
-  }
-  .cap-k {
-    color: #ff5c5c;
-  }
-  .cap-v {
-    color: #3ecf8e;
+  /* What this station is showing and what it is not. Our model does not fit a
+     screen, so every station states its slicing rule rather than cropping
+     silently. */
+  .stage-label.is-slice {
+    @apply rounded bg-white/60 px-1.5 py-0.5 text-[10px] text-forge-700
+           backdrop-blur-[2px] dark:bg-ink-950/60 dark:text-forge-300;
   }
 
   /* The character over a column: the position a Key, Value or query belongs
      to, in the model's own vocabulary. */
-  .stage-token {
+  .stage-label.is-token {
     @apply text-ink-500 dark:text-ink-300;
   }
 
   /* Values the stage prints rather than only drawing — the eight scores and
      the eight probabilities they become. */
-  .stage-num {
+  .stage-label.is-num {
     @apply text-[10px] tabular-nums text-ink-700 dark:text-ink-300;
   }
 
-  /* Dimension ticks down the side of the Query card: 0, 8, 16 … 56. */
-  .stage-dim {
+  /* Which position the walk is currently computing. */
+  .stage-label.is-pos {
     @apply text-[10px] tabular-nums text-ink-500 dark:text-ink-500;
   }
 
@@ -219,12 +219,16 @@
     display: none;
   }
 
-  /* A sibling of .stage-wrap, not a child: below md it has to leave the
-     fixed-height, overflow-hidden stage and sit under it. */
-  .stage-side {
-    @apply mt-3 w-full rounded-xl border border-ink-100 bg-white/85 p-3
-           backdrop-blur dark:border-ink-800 dark:bg-ink-950/85
-           md:absolute md:right-3 md:top-3 md:mt-0 md:w-56;
+  /* The walk's controls. A sibling of the stage, never an overlay on it: the
+     canvas shows the calculation and nothing else. */
+  .stepper {
+    @apply flex flex-wrap items-center gap-2 rounded-xl border border-ink-100
+           bg-white/85 p-2 dark:border-ink-800 dark:bg-ink-950/85;
+  }
+
+  .stepper-count {
+    @apply min-w-48 flex-1 px-2 font-mono text-xs text-ink-500
+           dark:text-ink-300;
   }
 
   /* Probability bars — a ranked list, so HTML, never 3D. */
@@ -240,11 +244,10 @@
     @apply relative flex justify-between gap-2 px-1.5 py-0.5;
   }
 
-  /* Below md the stage gives back the height the side panel no longer
-     overlaps. The pipeline is wider than it is tall, so on a phone it is the
-     width that decides how big a cell can be — extra height would only add
-     empty space above and below it. The triangle and the probability bars are
-     the two things that must stay legible at every width, and they do. */
+  /* On a phone the width decides how big a cell can be, so extra height would
+     only add empty space above and below the pipeline. The triangle and the
+     probability bars are the two things that must stay legible at every
+     width, and they do. */
   @media (max-width: 767px) {
     .stage-wrap {
       height: min(48vh, 360px);

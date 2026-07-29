@@ -17,7 +17,7 @@
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <!-- three.js r185 ships as two files: the module imports ./three.core.min.js
          beside it. Both are vendored; a missing sibling breaks the whole
-         module graph before explainer.js runs a single line. -->
+         module graph before pipeline.js runs a single line. -->
     <script type="importmap">
       { "imports": { "three": "./vendor/three.module.min.js" } }
     </script>
@@ -97,27 +97,20 @@
               A 10.77M-parameter character-level GPT — 6 blocks, 6 heads, 384
               dimensions, a 65-character vocabulary — trained from scratch by
               Forge on Tiny Shakespeare and running here on your own GPU. Below
-              is a single head of a single block: <strong>head 1 of block
-              1</strong>, doing the one calculation attention is made of.
+              is its <strong>whole forward pass</strong>, laid out left to
+              right: the embedding, both LayerNorms, Q, K and V, the scores and
+              their softmax, the weighted sum, the concatenation and projection,
+              both residual adds, the MLP, the five blocks that follow, and the
+              distribution over the next character.
             </p>
             <p class="lede">
-              Left to right: the <span class="cap-q">Query</span> for the
-              newest character, 64 numbers deep; the
-              <span class="cap-k">Keys</span> of the last 8 characters; the
-              score each key earns, which is nothing more exotic than
-              <code class="font-mono">q · kᵢ / √64</code>; the softmax of those
-              scores, drawn as the causal triangle; and the
-              <span class="cap-v">Values</span> that softmax weights, summed
-              into the head's output. Every cell is a number this model
-              computed on your GPU during the run beside it — not bucketed, not
-              averaged, not a stand-in. Hover one and it will tell you which.
-            </p>
-            <p class="lede">
-              A head is 64 of the model's 384 dimensions, which is small enough
-              to show honestly; the whole layer at once is what made the
-              earlier version of this section unreadable. The other five blocks
-              are folded into the stack underneath — same code, same live
-              attention, one slab each.
+              Every cell is a number this model computed on your GPU during the
+              run beside it — not bucketed, not averaged, not a stand-in. Hover
+              one and it will tell you which. Step through the fifteen stages
+              and the camera walks you along the calculation; each stop says
+              exactly what it is showing and what it is leaving out, because a
+              384-dimension model does not fit on a screen and pretending
+              otherwise would be the one lie this section cannot tell.
             </p>
           </div>
 
@@ -158,17 +151,145 @@
               </div>
             </div>
 
-            <div id="stage-side" class="stage-side">
-              <h3 class="text-xs font-semibold">Next character</h3>
-              <p class="mt-1 text-[11px] text-ink-500 dark:text-ink-300">
+          </div>
+
+          <!-- The walk. Buttons, not a custom widget: keyboard and screen
+               reader support for free. Disabled until a trace lands, because
+               stepping an empty scaffold explains nothing. -->
+          <div class="wrap mt-4">
+            <div class="stepper" role="group" aria-label="Walk the forward pass">
+              <button id="stage-prev" class="btn-ghost text-sm" type="button" disabled>
+                ‹ Prev
+              </button>
+              <p id="stage-counter" class="stepper-count" role="status" aria-live="polite">
+                Overview · 15 stages
+              </p>
+              <button id="stage-next" class="btn-ghost text-sm" type="button" disabled>
+                Next ›
+              </button>
+              <button id="stage-overview" class="btn-ghost text-sm" type="button" disabled>
+                ⤢ Overview
+              </button>
+            </div>
+          </div>
+
+          <!-- Prose and probabilities live HERE, beside the canvas and not
+               inside it: selectable, translatable, screen-readable, and alive
+               when WebGL is not. The canvas carries cell values and station
+               names, nothing else. -->
+          <div class="wrap mt-4 grid items-start gap-5 md:grid-cols-3">
+            <div class="card md:col-span-2">
+              <h3 id="stage-caption-title" class="font-semibold">
+                The whole forward pass
+              </h3>
+              <p
+                id="stage-caption"
+                class="mt-2 text-sm text-ink-500 dark:text-ink-300"
+              >
+                Fifteen stages, from the embedding to the next character. Press
+                Run below, then step through them — or hover any cell at any
+                time to read the number under it.
+              </p>
+              <p
+                id="stage-caption-slice"
+                class="mt-2 font-mono text-xs text-forge-700 dark:text-forge-300"
+              ></p>
+            </div>
+
+            <div class="card">
+              <h3 class="text-sm font-semibold">Next character</h3>
+              <p class="mt-1 text-xs text-ink-500 dark:text-ink-300">
                 The model's own probabilities, over the whole vocabulary.
               </p>
               <div id="stage-probs" class="mt-2"></div>
             </div>
           </div>
 
+          <!-- One <p> per stage, swapped into #stage-caption by demo.js. Prose
+               belongs in HTML rather than in the JS bundle: translatable,
+               indexable, and off the file closest to the payload budget. -->
+          <template id="stage-prose">
+            <p data-stage="tokens">
+              The prompt as the model sees it: one position per character, 65
+              possible values. Everything downstream is a rewriting of these.
+            </p>
+            <p data-stage="embed">
+              Each character id looks up a row of the token embedding table and
+              adds the position embedding for where it sits. That 384-number
+              vector is the residual stream — the tensor every later stage
+              reads and writes.
+            </p>
+            <p data-stage="ln1">
+              LayerNorm rescales each position's 384 numbers to zero mean and
+              unit variance, then applies a learned gain and bias. Compare the
+              tile with the last stage's: the extremes flatten.
+            </p>
+            <p data-stage="qkv">
+              One matrix multiply turns each position into a Query, a Key and a
+              Value. The Query asks what this position is looking for; the Keys
+              advertise what each position offers; the Values are what gets
+              collected. Drawn here is head 1 — 64 of the 384 dimensions.
+            </p>
+            <p data-stage="scores">
+              Every Query is scored against every Key by a dot product, divided
+              by √64 to keep the numbers in a range the softmax can use. This
+              is the whole rectangle, before anything is masked.
+            </p>
+            <p data-stage="softmax">
+              Softmax turns each row of scores into probabilities that sum to
+              one. A position may not attend to the future, so everything above
+              the diagonal is removed — which is why this is a triangle rather
+              than a square.
+            </p>
+            <p data-stage="headout">
+              Each Value is multiplied by the attention it received, and the
+              results are summed. That is the entire output of a head: a
+              weighted average of what every earlier position offered.
+            </p>
+            <p data-stage="concat">
+              Six heads do all of that at once, on different 64-dimension
+              slices. Their outputs are laid end to end back into one
+              384-number vector.
+            </p>
+            <p data-stage="proj">
+              A learned matrix mixes those 384 numbers, letting information
+              found by one head reach the dimensions another head writes to.
+            </p>
+            <p data-stage="resid1">
+              The result is <em>added</em> to what came into the block rather
+              than replacing it. That addition is the residual stream: the
+              embedding is still in there, with attention's contribution laid
+              on top.
+            </p>
+            <p data-stage="ln2">
+              A second LayerNorm, on the updated stream, feeding the other half
+              of the block.
+            </p>
+            <p data-stage="mlp">
+              384 numbers widen to 1536, GELU zeroes out most of the negative
+              ones, and what survives is the block's per-position computation —
+              the part that is not about other positions at all.
+            </p>
+            <p data-stage="blockout">
+              1536 narrows back to 384 and is added to the stream again. One
+              block is now complete, and the tensor leaving it has the same
+              shape as the one that entered.
+            </p>
+            <p data-stage="folded">
+              Five more blocks, identical code, running live on the same GPU.
+              One slab each, showing the newest position's attention across all
+              six heads — the picture from stage 6, five more times.
+            </p>
+            <p data-stage="out">
+              A final LayerNorm, then the same embedding table used backwards
+              turns 384 numbers into a score for each of the 65 characters.
+              Softmax makes those probabilities, and one is sampled. Then the
+              whole walk happens again.
+            </p>
+          </template>
+
           <!-- Shown instead of the canvas when WebGL is unavailable or
-               explainer.js fails to load. The token list and the probability
+               pipeline.js fails to load. The caption strip and the probability
                bars above are plain HTML and keep working either way. -->
           <div id="stage-fallback" class="wrap mt-4" hidden>
             <div class="card">
@@ -176,34 +297,31 @@
               <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
                 Your browser has no WebGL, so the 3D stage is not drawn. The
                 model still ran on your GPU and the numbers beside it are real.
-                What the stage would show is one head of one block: the newest
-                position's Query, a vector of 64 numbers, scored against the
-                Key of every position before it as q · kᵢ / √64; a softmax over
-                those scores, which is where the causal mask makes the picture
-                a triangle; and the Values of those same positions, weighted by
-                that softmax and summed into the head's output. Six heads do
-                that at once, their outputs are concatenated back to 384
-                dimensions, and an MLP that widens 384 → 1536, applies GELU and
-                comes back writes into the same residual stream — six blocks
-                deep.
+                What the stage would walk you through is the whole forward
+                pass. Each character becomes a 384-number vector — its token
+                embedding plus a position embedding — and that vector is the
+                residual stream every later stage reads and writes. A LayerNorm
+                rescales it; one matrix multiply turns it into a Query, a Key
+                and a Value per head; each Query is scored against every Key as
+                q · kᵢ / √64; a softmax over those scores, masked so no
+                position sees the future, decides how much of each Value to
+                collect; and the weighted sum is the head's output. Six heads
+                do that at once on different 64-dimension slices, their outputs
+                are laid end to end back into 384 numbers, a projection mixes
+                them, and the result is <em>added</em> to the stream rather
+                than replacing it. A second LayerNorm, an MLP that widens
+                384 → 1536, applies GELU and comes back, one more addition —
+                and that is one block, six blocks deep. A final LayerNorm and
+                the embedding table used backwards turn the last position's 384
+                numbers into a probability for each of the 65 characters.
               </p>
               <p id="stage-fallback-tokens" class="mt-3 font-mono text-xs text-ink-500 dark:text-ink-300"></p>
             </div>
           </div>
 
-          <!-- The remaining blocks, folded: same code, same live attention,
-               drawn by scene.js. -->
-          <div class="wrap mt-5 grid items-start gap-5 md:grid-cols-2">
-            <div id="folded-card" class="card p-0">
-              <div class="relative aspect-4/3 w-full overflow-hidden rounded-xl">
-                <canvas id="scene" class="h-full w-full" aria-hidden="true"></canvas>
-                <p
-                  id="scene-label"
-                  class="pointer-events-none absolute bottom-3 left-4 right-4 font-mono text-xs text-ink-500 dark:text-ink-300"
-                ></p>
-              </div>
-            </div>
-
+          <!-- Blocks 2-6 are stage 14 of the walk above, in the same scene
+               graph. There is no second canvas. -->
+          <div class="wrap mt-5">
             <div class="card">
               <!-- Replaced by demo.js when WebGPU is unavailable; the page
                    stays complete either way. -->
@@ -251,16 +369,34 @@
                       />
                     </div>
                     <div>
-                      <label for="demo-sampling" class="block text-sm font-medium"
-                        >Sampling</label
+                      <label for="demo-topk" class="block text-sm font-medium"
+                        >top-k</label
                       >
-                      <select
-                        id="demo-sampling"
-                        class="mt-1 rounded-lg border border-ink-100 bg-white p-2 text-sm dark:border-ink-700 dark:bg-ink-900"
+                      <input
+                        id="demo-topk"
+                        type="number"
+                        value="12"
+                        min="0"
+                        max="65"
+                        class="mt-1 w-24 rounded-lg border border-ink-100 bg-white p-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                      />
+                    </div>
+                    <div>
+                      <label for="demo-temp" class="block text-sm font-medium"
+                        >Temperature
+                        <span id="demo-temp-out" class="font-mono text-ink-500 dark:text-ink-300"
+                          >0.80</span
+                        ></label
                       >
-                        <option value="40">top-k 40, T=0.8</option>
-                        <option value="0">greedy</option>
-                      </select>
+                      <input
+                        id="demo-temp"
+                        type="range"
+                        value="0.8"
+                        min="0.1"
+                        max="1.5"
+                        step="0.05"
+                        class="mt-3 w-40 accent-forge-500"
+                      />
                     </div>
                     <button id="demo-run" class="btn-primary" type="button">
                       Run
@@ -269,6 +405,17 @@
                       Stop
                     </button>
                   </div>
+
+                  <!-- top-k 40 over a 65-character vocabulary keeps 62% of the
+                       vocabulary, which is barely a filter; nanoGPT's 200 is
+                       tuned for 50257 BPE tokens. 12 is the equivalent cut
+                       here. -->
+                  <p class="mt-3 text-xs text-ink-500 dark:text-ink-300">
+                    Lower temperature is more confident and more repetitive;
+                    top-k limits how many of the 65 characters can be chosen at
+                    all. <code class="font-mono">top-k 0</code> is greedy — the
+                    single most likely character, every time.
+                  </p>
 
                   <div id="demo-progress-wrap" class="mt-4" aria-hidden="true" hidden>
                     <div
@@ -295,6 +442,16 @@
                     id="demo-output"
                     class="scroll-x mt-4 max-h-96 min-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-ink-100 bg-white p-4 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
                   ></pre>
+
+                  <!-- Filled by demo.js from model/metrics.json, which
+                       ship_char_model.sh writes beside the weights. Stays
+                       empty when that file is absent: a hard-coded quality
+                       figure is exactly what this element exists to replace. -->
+                  <p
+                    id="demo-quality"
+                    class="mt-3 text-xs text-ink-500 dark:text-ink-300"
+                    hidden
+                  ></p>
                 </div>
               </div>
             </div>
@@ -544,10 +701,11 @@
             <div class="card">
               <h3 class="font-semibold">Context for the section above</h3>
               <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                Context 256 characters, 65-token vocabulary, LM head weight-tied
-                to the token embedding. GPT-2 124M is the same code with 12
-                blocks, 12 heads and n_embd 768 — 548 MB of weights, so it stays
-                a local artifact rather than something this page downloads.
+                The model this page runs is the 10.77M-parameter character-level
+                one: context 256 characters, 65-token vocabulary, LM head
+                weight-tied to the token embedding. GPT-2 124M is the same code
+                at 12 blocks, 12 heads and n_embd 768 — 548 MB of weights, so it
+                runs from the CLI and is never downloaded by this page.
               </p>
             </div>
           </div>
@@ -661,7 +819,7 @@ cargo run --release --example train_shakespeare -- \
           <div class="mt-8 grid gap-5 md:grid-cols-2">
             <div class="card">
               <div class="flex items-center justify-between gap-3">
-                <h3 class="font-semibold">Generate with GPT-2 124M</h3>
+                <h3 class="font-semibold">Generate with GPT-2 124M (local CLI)</h3>
                 <button class="btn-ghost text-xs" type="button" data-copy="cmd-generate">
                   Copy
                 </button>
@@ -720,7 +878,7 @@ cargo run --release --features tui \
     </footer>
 
     <!-- Modules are deferred by default, so this does not block first paint.
-         demo.js pulls in explainer.js and scene.js (and three.js) only when
+         demo.js pulls in pipeline.js (and three.js) only when
          #demo is reached. -->
     <script type="module" src="./demo.js"></script>
     <script type="module">
