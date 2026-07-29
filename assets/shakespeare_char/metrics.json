@@ -1,0 +1,8 @@
+{
+  "val_loss": 1.4696,
+  "train_loss": 1.0507,
+  "val_windows": 512,
+  "measured": "2026-07-29",
+  "source": "checkpoints/shakespeare_char.step2000.safetensors",
+  "reference": "nanoGPT train_shakespeare_char, val 1.4697"
+}
