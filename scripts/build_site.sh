@@ -48,7 +48,7 @@ echo "== css"
 "$TW" -i docs/src/input.css -o "$DIST/assets/app.css" --minify
 
 echo "== html + js"
-cp docs/src/index.html docs/src/scene.js docs/src/demo.js docs/src/explainer.js "$DIST/"
+cp docs/src/index.html docs/src/demo.js docs/src/pipeline.js "$DIST/"
 cp -r docs/vendor "$DIST/vendor"
 cp -r docs/static/. "$DIST/"
 

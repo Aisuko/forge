@@ -5,7 +5,7 @@
    preview is the classic Pages failure.
 2. Every module specifier inside every shipped .js resolves. three.js r185 is
    *two* files (three.module.min.js imports ./three.core.min.js), and a missing
-   sibling breaks the module graph before a single line of scene.js runs — with
+   sibling breaks the module graph before a single line of pipeline.js runs — with
    no console error a build step would notice.
 3. No root-absolute paths: the site is served from /forge/, not /.
 4. No cross-origin runtime references: no CDN, no HuggingFace fetch. (Links a
@@ -107,7 +107,7 @@ if problems:
     sys.exit(1)
 
 total = sum(f.stat().st_size for f in dist.rglob("*") if f.is_file())
-CORE = ["index.html", "assets/app.css", "scene.js", "demo.js", "explainer.js"]
+CORE = ["index.html", "assets/app.css", "demo.js", "pipeline.js"]
 blobs = [(dist / f).read_bytes() for f in CORE if (dist / f).exists()]
 core = sum(len(b) for b in blobs)
 # Budgeted on the compressed size, because that is what a visitor downloads:

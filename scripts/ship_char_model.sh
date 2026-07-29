@@ -26,6 +26,37 @@ cp "$SRC" "$DEST/model.safetensors"
 cp "$dir/$stem.config.json" "$DEST/config.json"
 cp "$dir/$stem.vocab.json" "$DEST/vocab.json"
 
+# Measure what is being shipped, and record it beside the weights. The website
+# reads this to show the model's held-out loss, and build_site.sh copies the
+# whole directory into docs/dist/model/. Measured here rather than typed by
+# anyone: a hard-coded quality figure is exactly what this file exists to
+# replace, and the previous shipped model's loss was recorded nowhere at all.
+TRAINER=target/release/examples/train_shakespeare
+if [[ -x "$TRAINER" && -f data/tinyshakespeare.txt ]]; then
+  echo "measuring held-out loss..."
+  losses=$("$TRAINER" --backend "${BACKEND:-wgpu}" --eval-only --eval-windows 512 \
+             --checkpoint "$DEST/model.safetensors" 2>/dev/null | grep '^{') || true
+  if [[ -n "${losses:-}" ]]; then
+    val=$(sed 's/.*"val":\([0-9.]*\).*/\1/' <<<"$losses")
+    train=$(sed 's/.*"train":\([0-9.]*\).*/\1/' <<<"$losses")
+    cat > "$DEST/metrics.json" <<JSON
+{
+  "val_loss": $val,
+  "train_loss": $train,
+  "val_windows": 512,
+  "measured": "$(date -u +%Y-%m-%d)",
+  "source": "$SRC",
+  "reference": "nanoGPT train_shakespeare_char, val 1.4697"
+}
+JSON
+    echo "  val $val, train $train — wrote $DEST/metrics.json"
+  else
+    echo "  note: could not measure; leaving metrics.json alone" >&2
+  fi
+else
+  echo "  note: no release trainer built, skipping metrics.json" >&2
+fi
+
 size=$(stat -c%s "$DEST/model.safetensors")
 mb=$((size / 1000000))
 echo "shipped $DEST"
