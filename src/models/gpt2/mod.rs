@@ -139,10 +139,26 @@ pub struct AttnStep {
 #[derive(Debug, Clone)]
 pub struct LayerDetail {
     pub layer: usize,
+    /// `[q_len, n_embd]`, the block's first LayerNorm.
+    pub ln1_out: Vec<f32>,
     /// `[n_head, q_len, head_dim]`
     pub q: Vec<f32>,
     pub k: Vec<f32>,
     pub v: Vec<f32>,
+    /// `[n_head, q_len, kv_len]` — `q · kᵢ / √head_dim` *before* the causal
+    /// mask and the softmax. The masked triangle only means something next to
+    /// the full rectangle it was cut from.
+    pub scores: Vec<f32>,
+    /// `[q_len, n_embd]` — the heads concatenated, before the output
+    /// projection. Kept separate from `attn_proj_out` because this is the one
+    /// place `n_head × head_dim` becomes `n_embd`.
+    pub attn_head_out: Vec<f32>,
+    /// `[q_len, n_embd]`, after the attention output projection.
+    pub attn_proj_out: Vec<f32>,
+    /// `[q_len, n_embd]`, after the first residual add.
+    pub resid_attn: Vec<f32>,
+    /// `[q_len, n_embd]`, the block's second LayerNorm.
+    pub ln2_out: Vec<f32>,
     /// `[q_len, 4 * n_embd]`, post-GELU.
     pub mlp_hidden: Vec<f32>,
     /// `[q_len, n_embd]`, after the second residual add.
@@ -167,6 +183,9 @@ pub struct StepTrace {
     pub attn: Vec<AttnStep>,
     /// The first `detail_layers` blocks, in layer order.
     pub detail: Vec<LayerDetail>,
+    /// `[q_len, n_embd]` — after the final LayerNorm, i.e. what the LM head
+    /// multiplies. Empty when `detail_layers` is 0.
+    pub ln_f_out: Vec<f32>,
     /// Top-n `(token id, probability)`, most likely first. Empty when `top_n`
     /// is 0.
     pub top: Vec<(u32, f32)>,
@@ -177,12 +196,19 @@ pub struct StepTrace {
 #[derive(Debug, Clone, Copy)]
 enum ProbeKind {
     Embedding,
+    Ln1Out { layer: usize },
     Query { layer: usize },
     Key { layer: usize },
     Value { layer: usize },
+    Scores { layer: usize },
     Attention { layer: usize },
+    AttnHeadOut { layer: usize },
+    AttnProjOut { layer: usize },
+    ResidAttn { layer: usize },
+    Ln2Out { layer: usize },
     MlpHidden { layer: usize },
     BlockOut { layer: usize },
+    LnFOut,
 }
 
 /// Capture request + accumulator, threaded through the forward pass.
@@ -386,7 +412,7 @@ impl Gpt2 {
         ops::kv_append(k_cache, &k, len)?;
         ops::kv_append(v_cache, &v, len)?;
         let kv_len = len + t;
-        let att = ops::matmul(
+        let scores = ops::matmul(
             &q,
             k_cache,
             None,
@@ -397,8 +423,14 @@ impl Gpt2 {
                 ..Default::default()
             },
         )?; // [h, t, kv_len]
-        let att = ops::softmax(&att, true, len)?; // off = kv_len - t
-        if let Some(p) = probe {
+        // The raw dot products, before the mask and the softmax: the causal
+        // triangle the next capture holds is only legible beside the full
+        // rectangle it was cut from.
+        if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+            p.push(ProbeKind::Scores { layer }, &scores);
+        }
+        let att = ops::softmax(&scores, true, len)?; // off = kv_len - t
+        if let Some(p) = probe.as_deref_mut() {
             p.push(ProbeKind::Attention { layer }, &att);
         }
         let y = ops::matmul(
@@ -411,7 +443,17 @@ impl Gpt2 {
             },
         )?; // [h, t, hd]
         let y = ops::merge_heads(&y)?;
-        block.attn_proj.forward(&y)
+        // Concatenation and projection are two stages of the picture, and
+        // returning only the projected tensor hides the one place
+        // `n_head × head_dim` becomes `n_embd`.
+        if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+            p.push(ProbeKind::AttnHeadOut { layer }, &y);
+        }
+        let proj = block.attn_proj.forward(&y)?;
+        if let Some(p) = probe.filter(|p| p.detail(layer)) {
+            p.push(ProbeKind::AttnProjOut { layer }, &proj);
+        }
+        Ok(proj)
     }
 
     /// Hidden states after the final LayerNorm: [t, n_embd].
@@ -477,17 +519,22 @@ impl Gpt2 {
             .zip(cache.k.iter_mut().zip(cache.v.iter_mut()))
             .enumerate()
         {
-            let attn_out = self.attention_cached(
-                layer,
-                block,
-                &block.ln_1.forward(&x)?,
-                kc,
-                vc,
-                pos,
-                probe.as_deref_mut(),
-            )?;
+            // Bound rather than passed inline so it can be captured: the
+            // walkthrough draws a LayerNorm as its own stage.
+            let ln1 = block.ln_1.forward(&x)?;
+            if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+                p.push(ProbeKind::Ln1Out { layer }, &ln1);
+            }
+            let attn_out =
+                self.attention_cached(layer, block, &ln1, kc, vc, pos, probe.as_deref_mut())?;
             x = ops::add(&x, &attn_out)?;
+            if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+                p.push(ProbeKind::ResidAttn { layer }, &x);
+            }
             let mlp_in = block.ln_2.forward(&x)?;
+            if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
+                p.push(ProbeKind::Ln2Out { layer }, &mlp_in);
+            }
             let mlp_hidden = ops::gelu(&block.mlp_fc.forward(&mlp_in)?)?;
             if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
                 p.push(ProbeKind::MlpHidden { layer }, &mlp_hidden);
@@ -499,7 +546,11 @@ impl Gpt2 {
             }
         }
         cache.len += ids.len();
-        self.ln_f.forward(&x)
+        let out = self.ln_f.forward(&x)?;
+        if let Some(p) = probe.filter(|p| p.detail_layers > 0) {
+            p.push(ProbeKind::LnFOut, &out);
+        }
+        Ok(out)
     }
 
     /// Empty KV cache sized for this model's full context.
@@ -565,9 +616,11 @@ impl Gpt2 {
     }
 
     /// [`Gpt2::logits_step_async`] plus a full calculation trace for this step:
-    /// the embedding, every block's attention, the first `detail_layers`
-    /// blocks' Q/K/V, post-GELU MLP and block output, and the `top_n` most
-    /// likely next tokens with their probabilities.
+    /// the embedding, every block's attention, the whole forward pass through
+    /// the first `detail_layers` blocks (both LayerNorms, Q/K/V, pre-softmax
+    /// scores, the concatenated heads and their projection, both residual
+    /// adds, post-GELU MLP), the final LayerNorm, and the `top_n` most likely
+    /// next tokens with their probabilities.
     ///
     /// The logits are identical to `logits_step_async` — the probe only reads
     /// tensors the step computes anyway. The whole step is enqueued first, and
@@ -577,8 +630,8 @@ impl Gpt2 {
     ///
     /// `detail_layers` is the cost knob. At 0 this is the attention-only probe
     /// and nothing but the post-softmax tensors is read. Each detail layer adds
-    /// `q_len * (3 * n_embd + 5 * n_embd)` floats, so a long prefill is the
-    /// only expensive call — a decode step is `q_len == 1`.
+    /// `q_len * (13 * n_embd + n_head * kv_len)` floats, so a long prefill is
+    /// the only expensive call — a decode step is `q_len == 1`.
     pub async fn logits_step_trace_async(
         &self,
         ids: &[u32],
@@ -618,23 +671,37 @@ impl Gpt2 {
             detail: (0..detail_layers)
                 .map(|layer| LayerDetail {
                     layer,
+                    ln1_out: Vec::new(),
                     q: Vec::new(),
                     k: Vec::new(),
                     v: Vec::new(),
+                    scores: Vec::new(),
+                    attn_head_out: Vec::new(),
+                    attn_proj_out: Vec::new(),
+                    resid_attn: Vec::new(),
+                    ln2_out: Vec::new(),
                     mlp_hidden: Vec::new(),
                     block_out: Vec::new(),
                 })
                 .collect(),
+            ln_f_out: Vec::new(),
             top: top_probs(&logits, top_n),
         };
         for ((kind, dims), data) in kinds.iter().zip(&shapes).zip(read) {
             match *kind {
                 ProbeKind::Embedding => trace.embedding = data,
+                ProbeKind::Ln1Out { layer } => trace.detail[layer].ln1_out = data,
                 ProbeKind::Query { layer } => trace.detail[layer].q = data,
                 ProbeKind::Key { layer } => trace.detail[layer].k = data,
                 ProbeKind::Value { layer } => trace.detail[layer].v = data,
+                ProbeKind::Scores { layer } => trace.detail[layer].scores = data,
+                ProbeKind::AttnHeadOut { layer } => trace.detail[layer].attn_head_out = data,
+                ProbeKind::AttnProjOut { layer } => trace.detail[layer].attn_proj_out = data,
+                ProbeKind::ResidAttn { layer } => trace.detail[layer].resid_attn = data,
+                ProbeKind::Ln2Out { layer } => trace.detail[layer].ln2_out = data,
                 ProbeKind::MlpHidden { layer } => trace.detail[layer].mlp_hidden = data,
                 ProbeKind::BlockOut { layer } => trace.detail[layer].block_out = data,
+                ProbeKind::LnFOut => trace.ln_f_out = data,
                 ProbeKind::Attention { layer } => {
                     let [n_head, q_len, kv_len] = dims[..] else {
                         return Err(ForgeError::Shape(format!(

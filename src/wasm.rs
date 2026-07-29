@@ -44,6 +44,7 @@ fn trace_to_js(t: &StepTrace, tokenizer: &AnyTokenizer) -> JsValue {
     // the one step with a whole triangular matrix to draw.
     set(&o, "isPrefill", &JsValue::from_bool(t.q_len > 1));
     set(&o, "embedding", &f32a(&t.embedding));
+    set(&o, "lnFOut", &f32a(&t.ln_f_out));
 
     let attn = js_sys::Array::new_with_length(t.attn.len() as u32);
     for (i, a) in t.attn.iter().enumerate() {
@@ -61,9 +62,15 @@ fn trace_to_js(t: &StepTrace, tokenizer: &AnyTokenizer) -> JsValue {
     for (i, d) in t.detail.iter().enumerate() {
         let e = js_sys::Object::new();
         set(&e, "layer", &num(d.layer));
+        set(&e, "ln1Out", &f32a(&d.ln1_out));
         set(&e, "q", &f32a(&d.q));
         set(&e, "k", &f32a(&d.k));
         set(&e, "v", &f32a(&d.v));
+        set(&e, "scores", &f32a(&d.scores));
+        set(&e, "attnHeadOut", &f32a(&d.attn_head_out));
+        set(&e, "attnProjOut", &f32a(&d.attn_proj_out));
+        set(&e, "residAttn", &f32a(&d.resid_attn));
+        set(&e, "ln2Out", &f32a(&d.ln2_out));
         set(&e, "mlpHidden", &f32a(&d.mlp_hidden));
         set(&e, "blockOut", &f32a(&d.block_out));
         detail.set(i as u32, e.into());
@@ -297,9 +304,15 @@ impl WasmGpt2 {
     /// | `qLen`, `kvLen`, `nHead`, `nEmbd`, `headDim` | number |
     /// | `isPrefill` | boolean (`qLen > 1`) |
     /// | `embedding` | `Float32Array` `[qLen × nEmbd]` |
+    /// | `lnFOut` | `Float32Array` `[qLen × nEmbd]`, after the final LayerNorm |
     /// | `attn` | `[{ layer, nHead, qLen, kvLen, probs }]`, every block |
-    /// | `detail` | `[{ layer, q, k, v, mlpHidden, blockOut }]`, `detail_layers` of them |
+    /// | `detail` | `[{ layer, ln1Out, q, k, v, scores, attnHeadOut, attnProjOut, residAttn, ln2Out, mlpHidden, blockOut }]`, `detail_layers` of them |
     /// | `top` | `[{ id, token, p }]`, ranked |
+    ///
+    /// `scores` is `q · kᵢ / √headDim` **before** the causal mask and the
+    /// softmax; `probs` in `attn` is the same tensor after both.
+    /// `attnHeadOut` is the concatenated heads before the output projection,
+    /// `attnProjOut` after it.
     ///
     /// `detail_layers` is the cost knob: 0 is exactly
     /// [`WasmGpt2::generate_with_attention`]'s readback. The expensive call is

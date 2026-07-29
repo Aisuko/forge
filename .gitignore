@@ -49,3 +49,4 @@ target/
 /plan/
 Cargo.lock
 references/
+logs/
