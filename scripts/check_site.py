@@ -3,10 +3,9 @@
 
 1. Every referenced asset exists — a 404 in production that works in local
    preview is the classic Pages failure.
-2. Every module specifier inside every shipped .js resolves. three.js r185 is
-   *two* files (three.module.min.js imports ./three.core.min.js), and a missing
-   sibling breaks the module graph before a single line of pipeline.js runs — with
-   no console error a build step would notice.
+2. Every module specifier inside every shipped .js resolves. A missing sibling
+   breaks the whole module graph before a single line runs — with no console
+   error a build step would notice.
 3. No root-absolute paths: the site is served from /forge/, not /.
 4. No cross-origin runtime references: no CDN, no HuggingFace fetch. (Links a
    visitor clicks are fine; a resource the page *loads* is not.)
@@ -59,11 +58,11 @@ for r in sorted(refs):
 
 # ── Module graph ──────────────────────────────────────────────────────────
 # Static (`from "x"`, `import "x"`, `export … from "x"`) and dynamic
-# (`import("x")`) specifiers, in every shipped module including the vendored
-# and wasm-bindgen-generated ones. Resolving these is what would have caught
-# the missing three.core.min.js at build time instead of in production.
+# (`import("x")`) specifiers, in every shipped module including the
+# wasm-bindgen-generated ones. Resolving these catches a renamed or unshipped
+# module at build time instead of in production.
 #
-# The specifier charset is deliberately narrow: minified three.js contains
+# The specifier charset is deliberately narrow: minified bundles contain
 # English strings like "…resized from ("+w+")", and a permissive pattern reads
 # those as imports.
 SPEC = r"""["']([A-Za-z0-9_@~./-]+)["']"""
@@ -107,7 +106,7 @@ if problems:
     sys.exit(1)
 
 total = sum(f.stat().st_size for f in dist.rglob("*") if f.is_file())
-CORE = ["index.html", "assets/app.css", "demo.js", "pipeline.js"]
+CORE = ["index.html", "assets/app.css", "demo.js", "attention.js"]
 blobs = [(dist / f).read_bytes() for f in CORE if (dist / f).exists()]
 core = sum(len(b) for b in blobs)
 # Budgeted on the compressed size, because that is what a visitor downloads:
@@ -116,6 +115,6 @@ core = sum(len(b) for b in blobs)
 # unminified on purpose, since the page's claim is that you can read it.
 wire = sum(len(gzip.compress(b, 9)) for b in blobs)
 print(f"site ok — {total / 1e6:.1f} MB total, {wire / 1024:.1f} KB core gzipped "
-      f"({core / 1024:.1f} KB raw; HTML+CSS+JS excluding three.js; budget 45 KB)")
+      f"({core / 1024:.1f} KB raw; HTML+CSS+JS excluding the wasm; budget 45 KB)")
 if wire > 45 * 1024:
     sys.exit("core payload is over the 45 KB gzipped budget")

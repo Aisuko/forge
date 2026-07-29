@@ -9,18 +9,12 @@
       content="Forge is the floor a dedicated, vendor-independent runtime has to stand on
                before it can carry real research — and eventually, local, safety-focused AI
                work — on hardware you control end to end. One Rust crate, 23 WGSL kernels,
-               no CUDA toolchain and no Python runtime. Watch a GPT compute attention in 3D
-               on your own GPU, and measure what a token costs there."
+               no CUDA toolchain and no Python runtime. Read a GPT's own attention matrix,
+               head by head, on your own GPU, and measure what a token costs there."
     />
     <!-- Relative, never root-absolute: the site is served from /forge/, not /. -->
     <link rel="stylesheet" href="./assets/app.css" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <!-- three.js r185 ships as two files: the module imports ./three.core.min.js
-         beside it. Both are vendored; a missing sibling breaks the whole
-         module graph before pipeline.js runs a single line. -->
-    <script type="importmap">
-      { "imports": { "three": "./vendor/three.module.min.js" } }
-    </script>
   </head>
   <body>
     <a
@@ -88,372 +82,239 @@
         </p>
       </header>
 
-      <!-- ── Watch it think: the calculation, in 3D ──────────────────── -->
+      <!-- ── Watch it think: the attention matrix, flat ──────────────── -->
       <section id="demo" class="section">
-        <div class="bleed">
+        <!-- No full-bleed wrapper any more: a flat grid reads better at the
+             page's own width than stretched to 1800px, which the six-station
+             3D pipeline needed and nothing here does. -->
+        <div>
           <div class="wrap">
             <h2 class="h2">Watch it think</h2>
-            <p class="lede">
-              A 10.77M-parameter character-level GPT — 6 blocks, 6 heads, 384
-              dimensions, a 65-character vocabulary — trained from scratch by
-              Forge on Tiny Shakespeare and running here on your own GPU. Below
-              is its <strong>whole forward pass</strong>, laid out left to
-              right: the embedding, both LayerNorms, Q, K and V, the scores and
-              their softmax, the weighted sum, the concatenation and projection,
-              both residual adds, the MLP, the five blocks that follow, and the
-              distribution over the next character.
-            </p>
-            <p class="lede">
-              Every cell is a number this model computed on your GPU during the
-              run beside it — not bucketed, not averaged, not a stand-in. Hover
-              one and it will tell you which. Step through the fifteen stages
-              and the camera walks you along the calculation; each stop says
-              exactly what it is showing and what it is leaving out, because a
-              384-dimension model does not fit on a screen and pretending
-              otherwise would be the one lie this section cannot tell.
-            </p>
           </div>
 
-          <!-- Relative wrapper, not the stage itself: below md the side panel
-               has to leave the fixed-height stage and sit under it. -->
-          <div class="relative mt-8">
-            <div id="stage-wrap" class="stage-wrap">
-              <canvas id="stage" class="h-full w-full" aria-hidden="true"></canvas>
-              <div id="stage-overlay" class="stage-overlay"></div>
+          <div class="wrap mt-8 grid items-start gap-5 lg:grid-cols-5">
+            <div class="lg:col-span-3">
+              <!-- 6 blocks x 6 heads. Buttons, not a <select>: the whole point
+                   is that switching is one click and the difference between two
+                   heads is visible immediately. -->
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div class="head-pick" role="group" aria-label="Block">
+                  <span class="head-pick-label">block</span>
+                  <div id="pick-block" class="contents"></div>
+                </div>
+                <div class="head-pick" role="group" aria-label="Head">
+                  <span class="head-pick-label">head</span>
+                  <div id="pick-head" class="contents"></div>
+                </div>
+              </div>
 
-              <p id="stage-hint" class="stage-hint">
-                drag to rotate · scroll to zoom · hover any cell for its value
+              <div id="heat-wrap" class="heat-wrap mt-3">
+                <canvas id="heat" class="h-full w-full" aria-hidden="true"></canvas>
+
+                <!-- Until the model runs the grid is empty. The Run button
+                     beside it says what to press, but on a phone the columns
+                     stack and it is a screen away, so the cover still carries
+                     the idle, loading and failed states and starts the same
+                     run. Removed for good once real numbers land. -->
+                <div id="stage-idle" class="stage-idle">
+                  <p class="text-sm font-medium">Nothing has been computed yet</p>
+                  <p
+                    id="stage-idle-text"
+                    class="mt-1 max-w-md text-xs text-ink-500 dark:text-ink-300"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    Every cell here is a probability the model produces as it
+                    runs. Start it and they arrive one character at a time —
+                    43 MB of weights, fetched once and then cached by your
+                    browser.
+                  </p>
+                  <button id="stage-idle-run" class="btn-primary mt-4" type="button">
+                    Run the model
+                  </button>
+                </div>
+              </div>
+
+              <p id="heat-readout" class="heat-readout" role="status"></p>
+              <!-- Said out loud because it is the one place the picture is not
+                   the number: a linear ramp would render as a bright diagonal
+                   on black and nothing else. -->
+              <p class="mt-1 text-xs text-ink-500 dark:text-ink-300">
+                Rows are queries, columns are keys, and the triangle is the
+                causal mask — no position may attend to the future. Brightness
+                is <span class="font-mono">p<sup>0.45</sup></span> so small
+                weights stay visible; the number you hover is the raw
+                probability.
               </p>
-              <p id="stage-readout" class="stage-readout" role="status"></p>
+            </div>
 
-              <!-- Until the model runs, the stage is a scaffold of empty
-                   cells and the only control that fills it is the Run button
-                   in the card *below* it. A visitor who has not scrolled that
-                   far sees a grey diagram with no numbers and no reason given
-                   — the section reads as broken. This cover says what is
-                   missing, carries the loading and error state, and starts
-                   the same run. Removed for good once real numbers land. -->
-              <div id="stage-idle" class="stage-idle">
-                <p class="text-sm font-medium">Nothing has been computed yet</p>
-                <p
-                  id="stage-idle-text"
-                  class="mt-1 max-w-md text-xs text-ink-500 dark:text-ink-300"
-                  role="status"
-                  aria-live="polite"
-                >
-                  Every cell here is filled in by the model as it runs. Start
-                  it and the numbers arrive one character at a time — 43 MB of
-                  weights, fetched once and then cached by your browser.
-                </p>
-                <button id="stage-idle-run" class="btn-primary mt-4" type="button">
-                  Run the model
-                </button>
+            <!-- The controls sit beside the grid, not under it: pressing Run
+                 and watching the matrix fill in is the whole point, and that
+                 only reads as one action if both are on screen at once. -->
+            <div class="lg:col-span-2">
+              <div class="card">
+                <!-- Replaced by demo.js when WebGPU is unavailable; the page
+                     stays complete either way. -->
+                <div id="demo-panel">
+                  <noscript>
+                    <p class="text-sm text-ink-500 dark:text-ink-300">
+                      The demo needs JavaScript. Everything else on this page
+                      works without it — or run the model locally with
+                      <code class="font-mono">./scripts/build_site.sh</code>.
+                    </p>
+                  </noscript>
+
+                  <div id="demo-app" hidden>
+                    <label for="demo-prompt" class="block text-sm font-medium"
+                      >Prompt</label
+                    >
+                    <textarea
+                      id="demo-prompt"
+                      rows="2"
+                      class="mt-2 w-full rounded-lg border border-ink-100 bg-white p-3 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                    >ROMEO:</textarea
+                    >
+                    <!-- Toggled through the `hidden` *property* by demo.js, so
+                         it must not also carry Tailwind's `hidden` class —
+                         display:none from a class survives hidden = false. -->
+                    <p
+                      id="demo-charset"
+                      class="mt-2 text-sm text-forge-700 dark:text-forge-300"
+                      role="status"
+                      hidden
+                    ></p>
+
+                    <div class="mt-4 flex flex-wrap items-end gap-4">
+                      <div>
+                        <label for="demo-tokens" class="block text-sm font-medium"
+                          >Tokens</label
+                        >
+                        <input
+                          id="demo-tokens"
+                          type="number"
+                          value="240"
+                          min="1"
+                          max="240"
+                          class="mt-1 w-24 rounded-lg border border-ink-100 bg-white p-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                        />
+                      </div>
+                      <div>
+                        <label for="demo-topk" class="block text-sm font-medium"
+                          >top-k</label
+                        >
+                        <input
+                          id="demo-topk"
+                          type="number"
+                          value="12"
+                          min="0"
+                          max="65"
+                          class="mt-1 w-24 rounded-lg border border-ink-100 bg-white p-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                        />
+                      </div>
+                      <div>
+                        <label for="demo-temp" class="block text-sm font-medium"
+                          >Temperature
+                          <span id="demo-temp-out" class="font-mono text-ink-500 dark:text-ink-300"
+                            >0.80</span
+                          ></label
+                        >
+                        <input
+                          id="demo-temp"
+                          type="range"
+                          value="0.8"
+                          min="0.1"
+                          max="1.5"
+                          step="0.05"
+                          class="mt-3 w-40 accent-forge-500"
+                        />
+                      </div>
+                      <button id="demo-run" class="btn-primary" type="button">
+                        Run
+                      </button>
+                      <button id="demo-stop" class="btn-ghost" type="button" hidden>
+                        Stop
+                      </button>
+                    </div>
+
+                    <!-- top-k 40 over a 65-character vocabulary keeps 62% of the
+                         vocabulary, which is barely a filter; nanoGPT's 200 is
+                         tuned for 50257 BPE tokens. 12 is the equivalent cut
+                         here. -->
+                    <p class="mt-3 text-xs text-ink-500 dark:text-ink-300">
+                      Lower temperature is more confident and more repetitive;
+                      top-k limits how many of the 65 characters can be chosen at
+                      all. <code class="font-mono">top-k 0</code> is greedy — the
+                      single most likely character, every time.
+                    </p>
+
+                    <div id="demo-progress-wrap" class="mt-4" aria-hidden="true" hidden>
+                      <div
+                        class="h-2 w-full overflow-hidden rounded bg-ink-100 dark:bg-ink-800"
+                      >
+                        <div
+                          id="demo-progress"
+                          class="h-full w-0 bg-forge-500 transition-[width]"
+                        ></div>
+                      </div>
+                    </div>
+
+                    <p
+                      id="demo-status"
+                      class="mt-3 font-mono text-xs text-ink-500 dark:text-ink-300"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      Weights (43 MB) are fetched only when you press Run, then
+                      cached by your browser.
+                    </p>
+
+                    <pre
+                      id="demo-output"
+                      class="scroll-x mt-4 max-h-96 min-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-ink-100 bg-white p-4 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+                    ></pre>
+
+                    <!-- Filled by demo.js from model/metrics.json, which
+                         ship_char_model.sh writes beside the weights. Stays
+                         empty when that file is absent: a hard-coded quality
+                         figure is exactly what this element exists to replace. -->
+                    <p
+                      id="demo-quality"
+                      class="mt-3 text-xs text-ink-500 dark:text-ink-300"
+                      hidden
+                    ></p>
+                  </div>
+                </div>
               </div>
             </div>
-
           </div>
 
-          <!-- The walk. Buttons, not a custom widget: keyboard and screen
-               reader support for free. Disabled until a trace lands, because
-               stepping an empty scaffold explains nothing. -->
-          <div class="wrap mt-4">
-            <div class="stepper" role="group" aria-label="Walk the forward pass">
-              <button id="stage-prev" class="btn-ghost text-sm" type="button" disabled>
-                ‹ Prev
-              </button>
-              <p id="stage-counter" class="stepper-count" role="status" aria-live="polite">
-                Overview · 15 stages
-              </p>
-              <button id="stage-next" class="btn-ghost text-sm" type="button" disabled>
-                Next ›
-              </button>
-              <button id="stage-overview" class="btn-ghost text-sm" type="button" disabled>
-                ⤢ Overview
-              </button>
-            </div>
-          </div>
-
-          <!-- Prose and probabilities live HERE, beside the canvas and not
-               inside it: selectable, translatable, screen-readable, and alive
-               when WebGL is not. The canvas carries cell values and station
-               names, nothing else. -->
-          <div class="wrap mt-4 grid items-start gap-5 md:grid-cols-3">
-            <div class="card md:col-span-2">
-              <h3 id="stage-caption-title" class="font-semibold">
-                The whole forward pass
-              </h3>
-              <p
-                id="stage-caption"
-                class="mt-2 text-sm text-ink-500 dark:text-ink-300"
-              >
-                Fifteen stages, from the embedding to the next character. Press
-                Run below, then step through them — or hover any cell at any
-                time to read the number under it.
-              </p>
-              <p
-                id="stage-caption-slice"
-                class="mt-2 font-mono text-xs text-forge-700 dark:text-forge-300"
-              ></p>
-            </div>
-
-            <div class="card">
-              <h3 class="text-sm font-semibold">Next character</h3>
-              <p class="mt-1 text-xs text-ink-500 dark:text-ink-300">
-                The model's own probabilities, over the whole vocabulary.
-              </p>
-              <div id="stage-probs" class="mt-2"></div>
-            </div>
-          </div>
-
-          <!-- One <p> per stage, swapped into #stage-caption by demo.js. Prose
-               belongs in HTML rather than in the JS bundle: translatable,
-               indexable, and off the file closest to the payload budget. -->
-          <template id="stage-prose">
-            <p data-stage="tokens">
-              The prompt as the model sees it: one position per character, 65
-              possible values. Everything downstream is a rewriting of these.
-            </p>
-            <p data-stage="embed">
-              Each character id looks up a row of the token embedding table and
-              adds the position embedding for where it sits. That 384-number
-              vector is the residual stream — the tensor every later stage
-              reads and writes.
-            </p>
-            <p data-stage="ln1">
-              LayerNorm rescales each position's 384 numbers to zero mean and
-              unit variance, then applies a learned gain and bias. Compare the
-              tile with the last stage's: the extremes flatten.
-            </p>
-            <p data-stage="qkv">
-              One matrix multiply turns each position into a Query, a Key and a
-              Value. The Query asks what this position is looking for; the Keys
-              advertise what each position offers; the Values are what gets
-              collected. Drawn here is head 1 — 64 of the 384 dimensions.
-            </p>
-            <p data-stage="scores">
-              Every Query is scored against every Key by a dot product, divided
-              by √64 to keep the numbers in a range the softmax can use. This
-              is the whole rectangle, before anything is masked.
-            </p>
-            <p data-stage="softmax">
-              Softmax turns each row of scores into probabilities that sum to
-              one. A position may not attend to the future, so everything above
-              the diagonal is removed — which is why this is a triangle rather
-              than a square.
-            </p>
-            <p data-stage="headout">
-              Each Value is multiplied by the attention it received, and the
-              results are summed. That is the entire output of a head: a
-              weighted average of what every earlier position offered.
-            </p>
-            <p data-stage="concat">
-              Six heads do all of that at once, on different 64-dimension
-              slices. Their outputs are laid end to end back into one
-              384-number vector.
-            </p>
-            <p data-stage="proj">
-              A learned matrix mixes those 384 numbers, letting information
-              found by one head reach the dimensions another head writes to.
-            </p>
-            <p data-stage="resid1">
-              The result is <em>added</em> to what came into the block rather
-              than replacing it. That addition is the residual stream: the
-              embedding is still in there, with attention's contribution laid
-              on top.
-            </p>
-            <p data-stage="ln2">
-              A second LayerNorm, on the updated stream, feeding the other half
-              of the block.
-            </p>
-            <p data-stage="mlp">
-              384 numbers widen to 1536, GELU zeroes out most of the negative
-              ones, and what survives is the block's per-position computation —
-              the part that is not about other positions at all.
-            </p>
-            <p data-stage="blockout">
-              1536 narrows back to 384 and is added to the stream again. One
-              block is now complete, and the tensor leaving it has the same
-              shape as the one that entered.
-            </p>
-            <p data-stage="folded">
-              Five more blocks, identical code, running live on the same GPU.
-              One slab each, showing the newest position's attention across all
-              six heads — the picture from stage 6, five more times.
-            </p>
-            <p data-stage="out">
-              A final LayerNorm, then the same embedding table used backwards
-              turns 384 numbers into a score for each of the 65 characters.
-              Softmax makes those probabilities, and one is sampled. Then the
-              whole walk happens again.
-            </p>
-          </template>
-
-          <!-- Shown instead of the canvas when WebGL is unavailable or
-               pipeline.js fails to load. The caption strip and the probability
-               bars above are plain HTML and keep working either way. -->
+          <!-- Shown instead of the grid if the 2D canvas is unavailable or
+               attention.js fails to load. Plain prose, so it survives whatever
+               took the canvas down. -->
           <div id="stage-fallback" class="wrap mt-4" hidden>
             <div class="card">
               <h3 class="font-semibold">The calculation, in words</h3>
               <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                Your browser has no WebGL, so the 3D stage is not drawn. The
-                model still ran on your GPU and the numbers beside it are real.
-                What the stage would walk you through is the whole forward
-                pass. Each character becomes a 384-number vector — its token
-                embedding plus a position embedding — and that vector is the
-                residual stream every later stage reads and writes. A LayerNorm
-                rescales it; one matrix multiply turns it into a Query, a Key
-                and a Value per head; each Query is scored against every Key as
-                q · kᵢ / √64; a softmax over those scores, masked so no
-                position sees the future, decides how much of each Value to
-                collect; and the weighted sum is the head's output. Six heads
-                do that at once on different 64-dimension slices, their outputs
-                are laid end to end back into 384 numbers, a projection mixes
-                them, and the result is <em>added</em> to the stream rather
-                than replacing it. A second LayerNorm, an MLP that widens
+                The attention grid could not be drawn in this browser. The model
+                still ran on your GPU and the numbers beside it are real. What
+                the grid shows is this: each character becomes a 384-number
+                vector — its token embedding plus a position embedding — and
+                that vector is the residual stream every later stage reads and
+                writes. A LayerNorm rescales it; one matrix multiply turns it
+                into a Query, a Key and a Value per head; each Query is scored
+                against every Key as q · kᵢ / √64; a softmax over those scores,
+                masked so no position sees the future, decides how much of each
+                Value to collect; and the weighted sum is the head's output. Six
+                heads do that at once on different 64-dimension slices, their
+                outputs are laid end to end back into 384 numbers, a projection
+                mixes them, and the result is <em>added</em> to the stream
+                rather than replacing it. A second LayerNorm, an MLP that widens
                 384 → 1536, applies GELU and comes back, one more addition —
                 and that is one block, six blocks deep. A final LayerNorm and
                 the embedding table used backwards turn the last position's 384
                 numbers into a probability for each of the 65 characters.
               </p>
               <p id="stage-fallback-tokens" class="mt-3 font-mono text-xs text-ink-500 dark:text-ink-300"></p>
-            </div>
-          </div>
-
-          <!-- Blocks 2-6 are stage 14 of the walk above, in the same scene
-               graph. There is no second canvas. -->
-          <div class="wrap mt-5">
-            <div class="card">
-              <!-- Replaced by demo.js when WebGPU is unavailable; the page
-                   stays complete either way. -->
-              <div id="demo-panel">
-                <noscript>
-                  <p class="text-sm text-ink-500 dark:text-ink-300">
-                    The demo needs JavaScript. Everything else on this page
-                    works without it — or run the model locally with
-                    <code class="font-mono">./scripts/build_site.sh</code>.
-                  </p>
-                </noscript>
-
-                <div id="demo-app" hidden>
-                  <label for="demo-prompt" class="block text-sm font-medium"
-                    >Prompt</label
-                  >
-                  <textarea
-                    id="demo-prompt"
-                    rows="2"
-                    class="mt-2 w-full rounded-lg border border-ink-100 bg-white p-3 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
-                  >ROMEO:</textarea
-                  >
-                  <!-- Toggled through the `hidden` *property* by demo.js, so
-                       it must not also carry Tailwind's `hidden` class —
-                       display:none from a class survives hidden = false. -->
-                  <p
-                    id="demo-charset"
-                    class="mt-2 text-sm text-forge-700 dark:text-forge-300"
-                    role="status"
-                    hidden
-                  ></p>
-
-                  <div class="mt-4 flex flex-wrap items-end gap-4">
-                    <div>
-                      <label for="demo-tokens" class="block text-sm font-medium"
-                        >Tokens</label
-                      >
-                      <input
-                        id="demo-tokens"
-                        type="number"
-                        value="240"
-                        min="1"
-                        max="240"
-                        class="mt-1 w-24 rounded-lg border border-ink-100 bg-white p-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
-                      />
-                    </div>
-                    <div>
-                      <label for="demo-topk" class="block text-sm font-medium"
-                        >top-k</label
-                      >
-                      <input
-                        id="demo-topk"
-                        type="number"
-                        value="12"
-                        min="0"
-                        max="65"
-                        class="mt-1 w-24 rounded-lg border border-ink-100 bg-white p-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
-                      />
-                    </div>
-                    <div>
-                      <label for="demo-temp" class="block text-sm font-medium"
-                        >Temperature
-                        <span id="demo-temp-out" class="font-mono text-ink-500 dark:text-ink-300"
-                          >0.80</span
-                        ></label
-                      >
-                      <input
-                        id="demo-temp"
-                        type="range"
-                        value="0.8"
-                        min="0.1"
-                        max="1.5"
-                        step="0.05"
-                        class="mt-3 w-40 accent-forge-500"
-                      />
-                    </div>
-                    <button id="demo-run" class="btn-primary" type="button">
-                      Run
-                    </button>
-                    <button id="demo-stop" class="btn-ghost" type="button" hidden>
-                      Stop
-                    </button>
-                  </div>
-
-                  <!-- top-k 40 over a 65-character vocabulary keeps 62% of the
-                       vocabulary, which is barely a filter; nanoGPT's 200 is
-                       tuned for 50257 BPE tokens. 12 is the equivalent cut
-                       here. -->
-                  <p class="mt-3 text-xs text-ink-500 dark:text-ink-300">
-                    Lower temperature is more confident and more repetitive;
-                    top-k limits how many of the 65 characters can be chosen at
-                    all. <code class="font-mono">top-k 0</code> is greedy — the
-                    single most likely character, every time.
-                  </p>
-
-                  <div id="demo-progress-wrap" class="mt-4" aria-hidden="true" hidden>
-                    <div
-                      class="h-2 w-full overflow-hidden rounded bg-ink-100 dark:bg-ink-800"
-                    >
-                      <div
-                        id="demo-progress"
-                        class="h-full w-0 bg-forge-500 transition-[width]"
-                      ></div>
-                    </div>
-                  </div>
-
-                  <p
-                    id="demo-status"
-                    class="mt-3 font-mono text-xs text-ink-500 dark:text-ink-300"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    Weights (43 MB) are fetched only when you press Run, then
-                    cached by your browser.
-                  </p>
-
-                  <pre
-                    id="demo-output"
-                    class="scroll-x mt-4 max-h-96 min-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-ink-100 bg-white p-4 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
-                  ></pre>
-
-                  <!-- Filled by demo.js from model/metrics.json, which
-                       ship_char_model.sh writes beside the weights. Stays
-                       empty when that file is absent: a hard-coded quality
-                       figure is exactly what this element exists to replace. -->
-                  <p
-                    id="demo-quality"
-                    class="mt-3 text-xs text-ink-500 dark:text-ink-300"
-                    hidden
-                  ></p>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -878,8 +739,7 @@ cargo run --release --features tui \
     </footer>
 
     <!-- Modules are deferred by default, so this does not block first paint.
-         demo.js pulls in pipeline.js (and three.js) only when
-         #demo is reached. -->
+         demo.js pulls in attention.js only when #demo is reached. -->
     <script type="module" src="./demo.js"></script>
     <script type="module">
       // Copy buttons — progressive enhancement, no dependency.

@@ -4,9 +4,8 @@
    detection is automatic, but these are explicit so a CI build from a
    different working directory cannot silently drop classes. */
 @source "./index.html";
-@source "./scene.js";
 @source "./demo.js";
-@source "./explainer.js";
+@source "./attention.js";
 
 @theme {
   --color-forge-50: #fff4ed;
@@ -118,94 +117,49 @@
     @apply overflow-x-auto;
   }
 
-  /* ── the explainer stage ──────────────────────────────────────────────
-     One full-bleed section: a six-station pipeline does not fit inside the
-     max-w-5xl .wrap the rest of the page uses. */
-  .bleed {
-    @apply mx-auto w-full max-w-[1800px] px-3 sm:px-5;
+  /* ── the attention grid ───────────────────────────────────────────────
+     Square, because the matrix is: rows are queries, columns are keys, and
+     any other aspect ratio distorts the one relationship being shown. */
+  .heat-wrap {
+    @apply relative aspect-square w-full overflow-hidden rounded-2xl border
+           border-ink-100 bg-ink-50/70 dark:border-ink-800 dark:bg-ink-950;
+    max-height: 560px;
   }
 
-  .stage-wrap {
-    @apply relative w-full overflow-hidden rounded-2xl border border-ink-100
-           bg-ink-50/70 dark:border-ink-800 dark:bg-ink-950;
-    /* The pipeline is about three times as wide as it is tall, so past this
-       height the extra pixels are margin above and below it, not bigger
-       cells. */
-    height: min(56vh, 520px);
-    min-height: 360px;
+  /* One line, always the same height whether or not the cursor is over a
+     cell — otherwise the diagram below it jumps on every hover. */
+  .heat-readout {
+    @apply mt-2 min-h-5 font-mono text-[11px] text-ink-500 dark:text-ink-300;
   }
 
-  /* The HTML half of the explainer: text and numbers live here, projected
-     onto 3D anchors each frame. Crisp at any DPR, selectable, and reachable
-     by a screen reader — which 3D text is not. */
-  .stage-overlay {
-    @apply pointer-events-none absolute inset-0;
+  .head-pick {
+    @apply flex flex-wrap items-center gap-1;
   }
 
-  .stage-label {
-    @apply absolute left-0 top-0 whitespace-nowrap font-mono text-[11px]
-           leading-none;
-    will-change: transform;
+  .head-pick-label {
+    @apply mr-1 font-mono text-xs text-ink-500 dark:text-ink-300;
   }
 
-  /* A station's name, anchored above it. The only prose the canvas carries;
-     everything longer lives in the caption strip below the stage. */
-  .stage-label.is-title {
-    @apply rounded bg-white/70 px-1.5 py-1 font-semibold text-ink-700
-           backdrop-blur-[2px] dark:bg-ink-950/70 dark:text-ink-100;
+  /* 36 of these, so they have to be small; the selected one has to be
+     unmistakable at that size, hence a filled swatch rather than a border. */
+  .pick {
+    @apply rounded border border-ink-100 px-2 py-1 font-mono text-xs
+           text-ink-500 transition-colors hover:bg-ink-50
+           dark:border-ink-700 dark:text-ink-300 dark:hover:bg-ink-800;
   }
 
-  /* What this station is showing and what it is not. Our model does not fit a
-     screen, so every station states its slicing rule rather than cropping
-     silently. */
-  .stage-label.is-slice {
-    @apply rounded bg-white/60 px-1.5 py-0.5 text-[10px] text-forge-700
-           backdrop-blur-[2px] dark:bg-ink-950/60 dark:text-forge-300;
+  .pick.is-on {
+    @apply border-forge-600 bg-forge-600 text-white hover:bg-forge-700
+           dark:border-forge-600;
   }
 
-  /* The character over a column: the position a Key, Value or query belongs
-     to, in the model's own vocabulary. */
-  .stage-label.is-token {
-    @apply text-ink-500 dark:text-ink-300;
-  }
-
-  /* Values the stage prints rather than only drawing — the eight scores and
-     the eight probabilities they become. */
-  .stage-label.is-num {
-    @apply text-[10px] tabular-nums text-ink-700 dark:text-ink-300;
-  }
-
-  /* Which position the walk is currently computing. */
-  .stage-label.is-pos {
-    @apply text-[10px] tabular-nums text-ink-500 dark:text-ink-500;
-  }
-
-  /* Hovering a key lights it in every station that key touches. */
-  .stage-label.is-lit {
-    @apply font-semibold text-forge-600;
-  }
-
-  .stage-hint,
-  .stage-readout {
-    @apply pointer-events-none absolute left-3 right-3 font-mono text-[11px]
-           text-ink-500 dark:text-ink-300;
-  }
-
-  .stage-hint {
-    @apply top-3;
-  }
-
-  .stage-readout {
-    @apply bottom-3;
-  }
-
-  /* The cover over the empty scaffold: what the stage is waiting for, and
-     the button that starts it. Frosted rather than opaque, so the diagram
+  /* The cover over the empty grid: what it is waiting for, and
+     the button that starts it. Frosted rather than opaque, so the grid
      underneath is visibly the thing about to fill in.
 
-     No z-index: it is the last positioned child of .stage-wrap, so it already
-     paints over the canvas and the overlay — and raising it would put it over
-     the "Next character" card, which is a sibling of the stage, not a child. */
+     No z-index: it is the last positioned child of .heat-wrap, so it already
+     paints over the canvas — and raising it would put it over the run panel
+     in the next column, which is a sibling of the grid, not a child. */
   .stage-idle {
     @apply absolute inset-0 flex flex-col items-center justify-center
            bg-ink-50/85 p-6 text-center backdrop-blur-[2px]
@@ -217,40 +171,5 @@
      the same trap the #demo-charset comment in index.html names. */
   .stage-idle[hidden] {
     display: none;
-  }
-
-  /* The walk's controls. A sibling of the stage, never an overlay on it: the
-     canvas shows the calculation and nothing else. */
-  .stepper {
-    @apply flex flex-wrap items-center gap-2 rounded-xl border border-ink-100
-           bg-white/85 p-2 dark:border-ink-800 dark:bg-ink-950/85;
-  }
-
-  .stepper-count {
-    @apply min-w-48 flex-1 px-2 font-mono text-xs text-ink-500
-           dark:text-ink-300;
-  }
-
-  /* Probability bars — a ranked list, so HTML, never 3D. */
-  .prob-row {
-    @apply relative mt-1 overflow-hidden rounded font-mono text-[11px];
-  }
-
-  .prob-fill {
-    @apply absolute inset-y-0 left-0 bg-forge-500/35;
-  }
-
-  .prob-text {
-    @apply relative flex justify-between gap-2 px-1.5 py-0.5;
-  }
-
-  /* On a phone the width decides how big a cell can be, so extra height would
-     only add empty space above and below the pipeline. The triangle and the
-     probability bars are the two things that must stay legible at every
-     width, and they do. */
-  @media (max-width: 767px) {
-    .stage-wrap {
-      height: min(48vh, 360px);
-    }
   }
 }

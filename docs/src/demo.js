@@ -4,36 +4,25 @@
 // Progressive enhancement throughout: every failure below replaces the panel
 // with an explanation, and none of them blanks it or breaks the rest of the
 // page. The three moving parts fail independently on purpose — WebGPU (the
-// model), WebGL (the 3D stage), and the plain HTML readouts — and any one of
+// model), the 2D attention grid, and the plain HTML readouts — and any one of
 // them missing still leaves a complete page.
 
 const $ = (id) => document.getElementById(id);
 const panel = $("demo-panel");
 const app = $("demo-app");
 
-// How many blocks the explainer captures in full. It draws one head of one
-// block in detail, so one is all it needs — and one layer of readback per step
-// instead of three. The rest are the folded stack: they run the identical
-// code, and their attention still feeds the slabs.
-const DETAIL = 1;
 // Probability bars to rank. 24 fits the panel; the char vocabulary is 65.
 const TOP_N = 24;
-// Above this the prefill detail readback is worth megabytes for one frame, so
-// it is skipped and the attention triangle carries the section alone. Lowered
-// from 96 when the trace grew the LayerNorm, raw-score and projection
-// captures: at 96 positions the prefill readback is 3.75 MB, at 64 it is 2.16.
-// The stage draws the last 8 positions either way, so nothing visible is lost.
-const MAX_DETAIL_PROMPT = 64;
 
-// ── The stage cover ───────────────────────────────────────────────────────
-// The stage draws an empty scaffold until a trace arrives, and the control
-// that produces one is a button in the card underneath it. Anyone who reads
-// "Watch it think" without scrolling past the whole stage sees grey cells and
-// no explanation, so the cover carries the section's state — idle, loading,
-// failed — and starts the run itself. It is looked up on each call because
-// startStage() removes the whole stage on a WebGL failure.
+// ── The grid cover ────────────────────────────────────────────────────────
+// The grid is empty until a trace arrives, and the control that produces one
+// is a button in the card underneath it. Anyone who reads "Watch it think"
+// without scrolling past it sees a blank box and no explanation, so the cover
+// carries the section's state — idle, loading, failed — and starts the run
+// itself. It is looked up on each call because startStage() removes the whole
+// grid if the canvas cannot be created.
 
-/** True once the stage has numbers of its own; the cover never returns after. */
+/** True once the grid has numbers of its own; the cover never returns after. */
 let stageLive = false;
 
 /** Show the cover with `text`, offering the Run button only when it can help. */
@@ -85,29 +74,6 @@ function clampNum(raw, lo, hi, fallback) {
   return Math.min(hi, Math.max(lo, v));
 }
 
-/** The model's next-token distribution, as bars. */
-function renderProbs(el, top) {
-  if (!el) return;
-  el.textContent = "";
-  for (const t of top) {
-    const row = document.createElement("div");
-    row.className = "prob-row";
-    const fill = document.createElement("span");
-    fill.className = "prob-fill";
-    fill.style.width = `${(t.p * 100).toFixed(1)}%`;
-    const text = document.createElement("span");
-    text.className = "prob-text";
-    const name = document.createElement("span");
-    name.textContent = glyph(t.token);
-    const p = document.createElement("span");
-    p.className = "text-ink-500 dark:text-ink-300";
-    p.textContent = t.p.toFixed(3);
-    text.append(name, p);
-    row.append(fill, text);
-    el.append(row);
-  }
-}
-
 /** The token columns, for the no-WebGL panel. */
 function renderTokens(el, tokens) {
   if (!el) return;
@@ -116,109 +82,87 @@ function renderTokens(el, tokens) {
     : "";
 }
 
-// ── The 3D stage ──────────────────────────────────────────────────────────
-// Separate from the WebGPU check on purpose: WebGL and WebGPU fail
-// independently, and either one missing must still leave a complete page.
+// ── The attention grid ────────────────────────────────────────────────────
+// Separate from the WebGPU check on purpose: a missing 2D context and a
+// missing WebGPU adapter fail independently, and either one must still leave
+// a complete page.
 
 let stagePromise = null;
 
-/** Start the pipeline at most once; resolves to the controller or null. */
+/** Start the grid at most once; resolves to the controller or null. */
 function ensureStage() {
   stagePromise = stagePromise || startStage();
   return stagePromise;
 }
 
 async function startStage() {
-  const canvas = $("stage");
+  const canvas = $("heat");
   if (!canvas) return null;
   try {
-    // three.js is 751 KB and lives behind this call, so it is fetched when
-    // the section is reached rather than on first paint.
-    const { createPipeline } = await import("./pipeline.js");
-    const pipeline = createPipeline({
+    const { createAttention } = await import("./attention.js");
+    const heat = createAttention({
       canvas,
-      overlay: $("stage-overlay"),
-      readout: $("stage-readout"),
-      onStage: showStage,
+      readout: $("heat-readout"),
+      onSelect: showPickers,
     });
-    wireStepper(pipeline);
-    return pipeline;
+    wirePickers(heat);
+    return heat;
   } catch (e) {
-    // No WebGL, or the module itself failed to load. Drop the canvas
-    // entirely — an empty rectangle is worse than no rectangle — and show
-    // the panel that says the same thing in words. The caption strip, the
-    // probability bars and the token list beside it are plain HTML and keep
-    // working.
-    console.warn("3D pipeline unavailable:", e);
-    $("stage-wrap")?.remove();
+    // No 2D context, or the module itself failed to load. Drop the box
+    // entirely — an empty rectangle is worse than no rectangle — and show the
+    // panel that says the same thing in words. Generation itself is untouched,
+    // so the output text beside it keeps arriving.
+    console.warn("attention grid unavailable:", e);
+    $("heat-wrap")?.remove();
     const fallback = $("stage-fallback");
     if (fallback) fallback.hidden = false;
     return null;
   }
 }
 
-// ── the walk ──────────────────────────────────────────────────────────────
-// The stepper is DOM; the camera is three.js. They meet here, and only here,
-// so the caption strip is readable prose in index.html rather than strings in
-// the JS bundle.
+// ── block and head pickers ────────────────────────────────────────────────
+// Built from the model's own config rather than hard-coded to 6 x 6: the
+// section has to describe the model that is running.
 
-/** Stage id → its <p>, read once out of the template in index.html. */
-const PROSE = (() => {
-  const t = document.getElementById("stage-prose");
-  const out = {};
-  for (const p of t ? t.content.querySelectorAll("p[data-stage]") : []) {
-    out[p.dataset.stage] = p.innerHTML;
+let heatRef = null;
+
+function wirePickers(heat) {
+  heatRef = heat;
+  for (const [id, pick] of [
+    ["pick-block", (i) => heat.select(i, heat.selection().head)],
+    ["pick-head", (i) => heat.select(heat.selection().block, i)],
+  ]) {
+    $(id)?.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-i]");
+      if (b) pick(Number(b.dataset.i));
+    });
   }
-  return out;
-})();
-
-let pipelineRef = null;
-
-/** Reflect the walk's position into the caption strip and the counter. */
-function showStage(index, stage) {
-  const count = pipelineRef?.stageCount ?? 15;
-  const counter = $("stage-counter");
-  const title = $("stage-caption-title");
-  const body = $("stage-caption");
-  const slice = $("stage-caption-slice");
-  if (!counter) return;
-  if (index < 0 || !stage) {
-    counter.textContent = `Overview · ${count} stages`;
-    title.textContent = "The whole forward pass";
-    body.innerHTML =
-      "Fifteen stages, from the embedding to the next character. Step " +
-      "through them, or hover any cell at any time to read the number under " +
-      "it.";
-    slice.textContent = "";
-    return;
-  }
-  counter.textContent = `${index + 1} / ${count} · ${stage.name}`;
-  title.textContent = stage.name;
-  body.innerHTML = PROSE[stage.id] || "";
-  slice.textContent = `showing: ${stage.slice}`;
 }
 
-function wireStepper(pipeline) {
-  pipelineRef = pipeline;
-  const buttons = ["stage-prev", "stage-next", "stage-overview"].map($);
-  const [prev, next, over] = buttons;
-  if (!prev) return;
-  for (const b of buttons) b.disabled = false;
-  prev.addEventListener("click", () => pipeline.prevStage());
-  next.addEventListener("click", () => pipeline.nextStage());
-  over.addEventListener("click", () => pipeline.overview());
-  // Arrow keys once a stepper button has focus. Bound here rather than to the
-  // document: a visitor typing a prompt is not trying to walk the pipeline.
-  // Not to the canvas either — it is aria-hidden, and making it focusable
-  // would put a stop on the tab order that a screen reader cannot describe.
-  prev.parentElement?.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowRight") pipeline.nextStage();
-    else if (e.key === "ArrowLeft") pipeline.prevStage();
-    else if (e.key === "Escape") pipeline.overview();
-    else return;
-    e.preventDefault();
-  });
-  showStage(pipeline.stage(), null);
+/** Redraw both rows of buttons; also the first call that creates them. */
+function showPickers(block, head, cfg) {
+  fillPicker($("pick-block"), cfg.nLayer, block);
+  fillPicker($("pick-head"), cfg.nHead, head);
+}
+
+function fillPicker(el, count, active) {
+  if (!el) return;
+  if (el.children.length !== count) {
+    el.textContent = "";
+    for (let i = 0; i < count; i++) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pick";
+      b.dataset.i = String(i);
+      b.textContent = String(i + 1);
+      el.append(b);
+    }
+  }
+  for (const b of el.children) {
+    const on = Number(b.dataset.i) === active;
+    b.classList.toggle("is-on", on);
+    b.setAttribute("aria-pressed", String(on));
+  }
 }
 
 const section = $("demo");
@@ -432,15 +376,12 @@ function wire() {
         return;
       }
 
-      const detailLayers = Math.min(DETAIL, model.n_layer());
-
       // The visualisation must describe the model that is running, not the
       // defaults it was built with.
       const stage = await ensureStage();
       stage?.setConfig({
         nLayer: model.n_layer(),
         nHead: model.n_head(),
-        nEmbd: model.n_embd(),
         nCtx: model.n_ctx(),
       });
       stage?.reset();
@@ -449,11 +390,6 @@ function wire() {
       const tokens = Array.from(model.tokenize_display(prompt));
       stage?.setTokens(tokens);
       renderTokens($("stage-fallback-tokens"), tokens);
-
-      // The §3.6 guard: a long prompt would make the prefill readback the most
-      // expensive thing on the page, for one frame nobody asked for.
-      const withDetail = tokens.length <= MAX_DETAIL_PROMPT;
-      stage?.setDetailEnabled(withDetail);
 
       $("demo-output").textContent = "";
       $("demo-stop").hidden = false;
@@ -489,16 +425,18 @@ function wire() {
           // The first trace is the moment the stage stops being a scaffold.
           if (stage) stageGoLive();
           stage?.pushTrace(trace);
-          renderProbs($("stage-probs"), trace.top);
         } catch (e) {
           console.warn("visualization step failed:", e);
         }
       };
 
-      // Text generation never depends on the views. onTrace swallows its own
-      // failures, and the trace path is taken even with no WebGL at all —
-      // the probability bars are HTML, and they are the readout that must
-      // survive everything else going missing.
+      // Text generation never depends on the views: onTrace swallows its own
+      // failures, so a broken grid costs the picture and nothing else.
+      //
+      // detail_layers is 0 and now always will be: `attn` carries every
+      // block's probabilities on its own, and the per-layer tensor capture
+      // that fed the 3D tiles cost megabytes of readback per prefill for a
+      // picture nothing draws any more.
       await model.generate_with_trace(
         prompt,
         n,
@@ -507,7 +445,7 @@ function wire() {
         BigInt(Date.now() % 100000),
         onText,
         onTrace,
-        stage && withDetail ? detailLayers : 0,
+        0,
         TOP_N,
       );
 
