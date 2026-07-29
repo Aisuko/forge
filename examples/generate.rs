@@ -27,6 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokens: usize = get("--tokens").map_or(30, |s| s.parse().expect("--tokens"));
     let topk: Option<usize> = get("--topk").map(|s| s.parse().expect("--topk"));
     let temp: f32 = get("--temp").map_or(0.8, |s| s.parse().expect("--temp"));
+    // Was hard-wired to 42, which made one prompt yield exactly one sample.
+    // Scoring a model's output needs several draws to be stable.
+    let seed: u64 = get("--seed").map_or(42, |s| s.parse().expect("--seed"));
 
     let device = match backend.as_str() {
         "cpu" => Device::Cpu,
@@ -59,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(k) => Sampling::TopK {
             k,
             temperature: temp,
-            seed: 42,
+            seed,
         },
         None => Sampling::Greedy,
     };

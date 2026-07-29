@@ -48,6 +48,15 @@ struct Args {
     sample_every: usize,
     eval_every: usize,
     eval_batches: usize,
+    /// Decoupled weight decay. Was fixed at the `AdamWOpts` default, which
+    /// made the one knob most likely to help an overfitting run unsearchable.
+    wd: f32,
+    /// Windows in the deterministic evaluation (see [`eval_loss_strided`]).
+    eval_windows: usize,
+    /// Stop after this many evaluations without a new best val loss. 0 is off.
+    early_stop: usize,
+    /// Load the checkpoint, evaluate it, print JSON, exit. No training.
+    eval_only: bool,
 }
 
 /// Per-tokenizer defaults. The char run reproduces nanoGPT's
@@ -81,8 +90,14 @@ fn defaults(tokenizer: &str) -> Args {
         },
         resume: false,
         sample_every: if char_mode { 500 } else { 0 },
-        eval_every: 250,
+        // Evaluation is ~0.3% of the cost of a training step, and the best
+        // checkpoint can only be caught by an eval that ran near it.
+        eval_every: 100,
         eval_batches: 20,
+        wd: 0.1,
+        eval_windows: 512,
+        early_stop: 0,
+        eval_only: false,
     }
 }
 
@@ -124,6 +139,10 @@ fn parse_args() -> Args {
             "--sample-every" => a.sample_every = val().parse().unwrap(),
             "--eval-every" => a.eval_every = val().parse().unwrap(),
             "--eval-batches" => a.eval_batches = val().parse().unwrap(),
+            "--wd" => a.wd = val().parse().unwrap(),
+            "--eval-windows" => a.eval_windows = val().parse().unwrap(),
+            "--early-stop" => a.early_stop = val().parse().unwrap(),
+            "--eval-only" => a.eval_only = true,
             other => panic!("unknown flag {other}"),
         }
     }
@@ -157,7 +176,36 @@ fn load_tokens(tok: &AnyTokenizer, text: &str) -> Vec<u32> {
     ids
 }
 
+/// Deterministic mean loss over evenly spaced windows covering the whole
+/// split, forward only.
+///
+/// Unlike the random-window version below, this is a property of the weights
+/// alone: two checkpoints evaluated a month apart are directly comparable, and
+/// a figure recorded today still means the same thing later. At ~17 ms per
+/// window on an A5000 the full validation split (434 windows at seq_len 256)
+/// costs about 7 s — 0.3% of the 2.7 s a training step takes — so it can run
+/// every 100 steps without mattering.
+fn eval_loss_strided(model: &Gpt2, ids: &[u32], seq_len: usize, max_windows: usize) -> f32 {
+    if ids.len() <= seq_len + 1 {
+        return f32::NAN;
+    }
+    let usable = ids.len() - seq_len - 1;
+    // Non-overlapping by default; on a split too large for `max_windows`,
+    // spread the windows evenly rather than truncating to a prefix.
+    let n = (usable / seq_len + 1).min(max_windows).max(1);
+    let stride = if n > 1 { usable / (n - 1) } else { 0 };
+    let mut total = 0.0f32;
+    for i in 0..n {
+        let s = i * stride;
+        total += model
+            .loss(&ids[s..s + seq_len], &ids[s + 1..s + seq_len + 1])
+            .unwrap();
+    }
+    total / n as f32
+}
+
 /// Mean loss over `n` random windows of the given id slice, forward only.
+#[allow(dead_code)] // kept as the reference the strided version is checked against
 fn eval_loss(model: &Gpt2, ids: &[u32], seq_len: usize, n: usize, seed: u64) -> f32 {
     if ids.len() <= seq_len + 1 {
         return f32::NAN;
@@ -212,12 +260,28 @@ fn main() {
         layer_norm_epsilon: 1e-5,
         eos_token_id: None,
     };
-    let mut model = if a.resume {
-        println!("resuming from {}", a.checkpoint);
+    // --eval-only implies --resume: there is nothing to evaluate about a
+    // randomly initialised model, and silently scoring one returns ln(vocab)
+    // rather than an error.
+    let mut model = if a.resume || a.eval_only {
+        println!("loading {}", a.checkpoint);
         Gpt2::from_safetensors(&a.checkpoint, config.clone(), &device).unwrap()
     } else {
         Gpt2::init_random(config.clone(), &device, a.seed).unwrap()
     };
+    // Evaluate and leave. This is the path the training script uses to score
+    // an existing checkpoint — including the one the site currently ships —
+    // without the `--lr 0 --steps 1` trick that was the only way before.
+    if a.eval_only {
+        let tr = eval_loss_strided(&model, train_ids, a.seq_len, a.eval_windows);
+        let va = eval_loss_strided(&model, val_ids, a.seq_len, a.eval_windows);
+        println!(
+            "{{\"checkpoint\":{:?},\"train\":{tr:.4},\"val\":{va:.4},\"windows\":{}}}",
+            a.checkpoint, a.eval_windows
+        );
+        return;
+    }
+
     let n_params: usize = model
         .params()
         .unwrap()
@@ -240,6 +304,7 @@ fn main() {
     let opts = AdamWOpts {
         lr: a.lr,
         beta2: a.beta2,
+        weight_decay: a.wd,
         ..Default::default()
     };
     let specs = model.param_specs();
@@ -256,7 +321,29 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(a.seed);
     let mut ema: Option<f32> = None;
     let mut best_val = f32::INFINITY;
+    let mut best_step = 0usize;
+    // Evaluations since the last improvement, for --early-stop.
+    let mut stale = 0usize;
     let start = std::time::Instant::now();
+
+    // Where the best-so-far weights go. This is the file worth shipping: for
+    // this recipe the validation loss bottoms out around step 2000 of 5000 and
+    // then climbs, so the *last* checkpoint is the worst one the run produced.
+    // Saving only on a fixed cadence threw that away on every run so far.
+    let stem = std::path::Path::new(&a.checkpoint)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model")
+        .to_string();
+    let dir = std::path::Path::new(&a.checkpoint)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let best_path = dir.join(format!("{stem}.best.safetensors"));
+    let log_path = dir.join(format!("{stem}.metrics.jsonl"));
+    let mut log = std::fs::File::create(&log_path).ok();
+    // An "improvement" smaller than this is evaluation noise, not progress.
+    const MIN_DELTA: f32 = 1e-3;
     if let Some(dir) = std::path::Path::new(&a.checkpoint).parent() {
         std::fs::create_dir_all(dir).ok();
     }
@@ -324,11 +411,42 @@ fn main() {
             std::io::stdout().flush().ok();
         }
         if a.eval_every > 0 && (step % a.eval_every == 0 || step == a.steps) {
-            let tr = eval_loss(&model, train_ids, a.seq_len, a.eval_batches, 99);
-            let va = eval_loss(&model, val_ids, a.seq_len, a.eval_batches, 99);
-            best_val = best_val.min(va);
-            println!("eval  @ {step:5}  train {tr:7.4}  val {va:7.4}  (best val {best_val:7.4})");
+            let tr = eval_loss_strided(&model, train_ids, a.seq_len, a.eval_windows);
+            let va = eval_loss_strided(&model, val_ids, a.seq_len, a.eval_windows);
+            let improved = va < best_val - MIN_DELTA;
+            if improved {
+                best_val = va;
+                best_step = step;
+                stale = 0;
+                model.save_safetensors(&best_path).unwrap();
+                write_sidecars(best_path.to_str().unwrap(), &model.config, &tok);
+            } else {
+                stale += 1;
+            }
+            println!(
+                "eval  @ {step:5}  train {tr:7.4}  val {va:7.4}  \
+                 (best {best_val:7.4} @ {best_step}){}",
+                if improved { "  ← saved" } else { "" }
+            );
+            if let Some(f) = log.as_mut() {
+                writeln!(
+                    f,
+                    "{{\"step\":{step},\"train\":{tr:.4},\"val\":{va:.4},\
+                      \"lr\":{:.3e},\"best_val\":{best_val:.4},\"best_step\":{best_step},\
+                      \"elapsed_s\":{:.1}}}",
+                    opt.opts.lr,
+                    start.elapsed().as_secs_f32()
+                )
+                .ok();
+            }
             std::io::stdout().flush().ok();
+            if a.early_stop > 0 && stale >= a.early_stop {
+                println!(
+                    "early stop at {step}: {stale} evaluations without improvement \
+                     (best val {best_val:.4} @ step {best_step})"
+                );
+                break;
+            }
         }
         if a.sample_every > 0 && step % a.sample_every == 0 {
             let text = model
@@ -353,17 +471,25 @@ fn main() {
         }
     }
     let final_ema = ema.unwrap();
-    let val = eval_loss(&model, val_ids, a.seq_len, a.eval_batches.max(50), 99);
+    let val = eval_loss_strided(&model, val_ids, a.seq_len, a.eval_windows);
     let gate = if a.tokenizer == "char" {
         "gate: nanoGPT reference val loss ~1.48"
     } else {
         "gate: start ~10.8, target < 4.0"
     };
     println!(
-        "done: smoothed train loss {final_ema:.4}, val loss {val:.4} after {} steps ({:.1}s) — {gate}",
-        a.steps,
+        "done: smoothed train loss {final_ema:.4}, final val loss {val:.4} ({:.1}s) — {gate}",
         start.elapsed().as_secs_f32()
     );
+    // The last checkpoint is not the best one for this recipe, so say which
+    // file to actually use rather than leaving it to be guessed.
+    if best_val.is_finite() {
+        println!(
+            "best:  val {best_val:.4} at step {best_step} — {}",
+            best_path.display()
+        );
+        println!("log:   {}", log_path.display());
+    }
 }
 
 /// Write `config.json` and `vocab.json` beside the checkpoint so the artifact
