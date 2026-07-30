@@ -90,29 +90,80 @@
         <div>
           <div class="wrap">
             <h2 class="h2">Watch it think</h2>
+            <!-- The section's claim, stated. Through v6 this heading was
+                 followed straight by a 246 x 246 grid, which is an answer to a
+                 question the visitor had not been asked yet. -->
+            <p class="lede">
+              It writes one character at a time. Each one is a choice among 65,
+              and to make it the model reads the characters already there. Both
+              halves of that are below, as they happen: the shortlist it chose
+              from, and the places it looked to build it.
+            </p>
           </div>
 
           <div class="wrap mt-8 grid items-start gap-5 lg:grid-cols-5">
             <div class="lg:col-span-3">
-              <!-- 6 blocks x 6 heads. Buttons, not a <select>: the whole point
-                   is that switching is one click and the difference between two
-                   heads is visible immediately. -->
-              <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <div class="head-pick" role="group" aria-label="Block">
-                  <span class="head-pick-label">block</span>
-                  <div id="pick-block" class="contents"></div>
+              <!-- The two panels share one cover, so it must wrap both. -->
+              <div id="stage-panels" class="relative">
+                <div class="card">
+                  <h3 class="panel-h">What it chose</h3>
+                  <!-- These probabilities are top_probs() over the raw logits —
+                       a real softmax across the whole vocabulary, taken before
+                       temperature and top-k touch anything. Saying so matters:
+                       the character actually sampled comes from the reshaped
+                       distribution, so the top bar and the chosen bar are
+                       allowed to differ, and that is the panel's best moment
+                       rather than a bug. -->
+                  <p class="panel-sub">
+                    The model's own probability for each candidate, before
+                    temperature and top-k reshape the distribution it samples
+                    from — so the character it picks is not always the one at the
+                    top.
+                  </p>
+                  <p id="dec-context" class="dec-context"></p>
+                  <div id="dec-bars" class="mt-2"></div>
+                  <p id="dec-note" class="panel-note"></p>
                 </div>
-                <div class="head-pick" role="group" aria-label="Head">
-                  <span class="head-pick-label">head</span>
-                  <div id="pick-head" class="contents"></div>
+
+                <div id="look-card" class="card mt-4">
+                  <h3 class="panel-h">Where it looked</h3>
+                  <p class="panel-sub">
+                    Attention for the position just computed, over the 32
+                    characters before it. Bar heights are relative to the
+                    strongest position in that row; hover one for the exact
+                    probability.
+                  </p>
+
+                  <!-- 6 blocks x 6 heads. Buttons, not a <select>: the whole
+                       point is that switching is one click and the difference
+                       between two heads is visible immediately — which it only
+                       is now that the caption underneath says what changed. -->
+                  <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <div class="head-pick" role="group" aria-label="Block">
+                      <span class="head-pick-label">block</span>
+                      <div id="pick-block" class="contents"></div>
+                    </div>
+                    <div class="head-pick" role="group" aria-label="Head">
+                      <span class="head-pick-label">head</span>
+                      <div id="pick-head" class="contents"></div>
+                    </div>
+                  </div>
+
+                  <div id="heat-strip" class="strip mt-3"></div>
+                  <!-- Every clause of this line is generated from a number
+                       measured on the matrix in front of you. Hand-written head
+                       labels were the alternative and they cannot survive a
+                       retrain. -->
+                  <p
+                    id="heat-caption"
+                    class="panel-caption"
+                    role="status"
+                    aria-live="polite"
+                  ></p>
                 </div>
-              </div>
 
-              <div id="heat-wrap" class="heat-wrap mt-3">
-                <canvas id="heat" class="h-full w-full" aria-hidden="true"></canvas>
-
-                <!-- Until the model runs the grid is empty. The Run button
-                     beside it says what to press, but on a phone the columns
+                <!-- Until the model runs both panels are empty. The Run button
+                     beside them says what to press, but on a phone the columns
                      stack and it is a screen away, so the cover still carries
                      the idle, loading and failed states and starts the same
                      run. Removed for good once real numbers land. -->
@@ -124,10 +175,11 @@
                     role="status"
                     aria-live="polite"
                   >
-                    Every cell here is a probability the model produces as it
-                    runs. Start it and they arrive one character at a time —
-                    43 MB of weights, fetched once and then cached by your
-                    browser.
+                    Every number here is produced by
+                    <span class="font-mono">shakespeare-char</span>, a 10.77M
+                    parameter model trained from scratch with Forge. Start it and
+                    the numbers arrive one character at a time — 43 MB of
+                    weights, fetched once and then cached by your browser.
                   </p>
                   <button id="stage-idle-run" class="btn-primary mt-4" type="button">
                     Run the model
@@ -135,17 +187,29 @@
                 </div>
               </div>
 
-              <p id="heat-readout" class="heat-readout" role="status"></p>
-              <!-- Said out loud because it is the one place the picture is not
-                   the number: a linear ramp would render as a bright diagonal
-                   on black and nothing else. -->
-              <p class="mt-1 text-xs text-ink-500 dark:text-ink-300">
-                Rows are queries, columns are keys, and the triangle is the
-                causal mask — no position may attend to the future. Brightness
-                is <span class="font-mono">p<sup>0.45</sup></span> so small
-                weights stay visible; the number you hover is the raw
-                probability.
-              </p>
+              <!-- The overview, for people who want it — and closed by default,
+                   because at 246 positions it is a two-pixel-per-cell picture
+                   with no room for the character axes, which is exactly the
+                   thing nobody could read. -->
+              <details id="heat-details" class="mt-4">
+                <summary class="heat-summary">
+                  The whole matrix, every position
+                </summary>
+                <div class="heat-wrap mt-3">
+                  <canvas id="heat" class="h-full w-full" aria-hidden="true"></canvas>
+                </div>
+                <p id="heat-readout" class="heat-readout" role="status"></p>
+                <!-- Said out loud because it is the one place the picture is not
+                     the number: a linear ramp would render as a bright diagonal
+                     on black and nothing else. -->
+                <p class="mt-1 text-xs text-ink-500 dark:text-ink-300">
+                  Rows are queries, columns are keys, and the triangle is the
+                  causal mask — no position may attend to the future. Brightness
+                  is <span class="font-mono">p<sup>0.45</sup></span> so small
+                  weights stay visible; the number you hover is the raw
+                  probability.
+                </p>
+              </details>
             </div>
 
             <!-- The controls sit beside the grid, not under it: pressing Run
@@ -295,9 +359,10 @@
             <div class="card">
               <h3 class="font-semibold">The calculation, in words</h3>
               <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                The attention grid could not be drawn in this browser. The model
-                still ran on your GPU and the numbers beside it are real. What
-                the grid shows is this: each character becomes a 384-number
+                "Where it looked" could not be drawn in this browser. The model
+                still ran on your GPU, and the shortlist and the numbers beside
+                it are real. What the missing panel shows is this: each character
+                becomes a 384-number
                 vector — its token embedding plus a position embedding — and
                 that vector is the residual stream every later stage reads and
                 writes. A LayerNorm rescales it; one matrix multiply turns it
@@ -467,85 +532,72 @@
         </div>
       </section>
 
-      <!-- ── Read the whole thing ────────────────────────────────────── -->
+      <!-- ── The model, and how to run it ────────────────────────────── -->
+      <!-- Through v7 this section was "Read the whole thing": a four-entry
+           catalogue of source directories plus the safetensors-vs-.pt
+           checkpoint note. That is a table of contents for a repo the visitor
+           has not cloned, and it restated block dimensions the section above
+           has already shown them. The invitation to read now fits in one link,
+           and the two cards keep what is actually about this page: the model it
+           ran, and how to serve it yourself. -->
       <section id="read" class="section">
         <div class="wrap">
-          <h2 class="h2">Read the whole thing</h2>
+          <h2 class="h2">The model, and how to run it</h2>
           <p class="lede">
-            Small enough to read in an afternoon, and laid out so you can. Each
-            entry below is a link to the actual source.
+            One Rust crate, small enough to read in an afternoon — all of it is
+            <a
+              class="text-forge-600 hover:underline"
+              href="https://github.com/Aisuko/forge"
+              rel="noopener"
+              >on GitHub</a
+            >. Below is the model the page above just ran, and the two commands
+            that serve this page on your own machine.
           </p>
 
-          <ol class="mt-8 space-y-3 text-sm text-ink-500 dark:text-ink-300">
-            <li>
-              <a
-                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
-                href="https://github.com/Aisuko/forge/tree/main/src/models/gpt2"
-                rel="noopener"
-                >src/models/gpt2/</a
-              >
-              — config, the transformer blocks, KV-cache decode, generation, and
-              the trace the section above is drawn from. Each block is
-              LayerNorm → causal self-attention (6 heads × 64) → LayerNorm →
-              MLP (384 → 1536 → 384, GELU).
-            </li>
-            <li>
-              <a
-                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
-                href="https://github.com/Aisuko/forge/tree/main/src/nn"
-                rel="noopener"
-                >src/nn/</a
-              >,
-              <a
-                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
-                href="https://github.com/Aisuko/forge/tree/main/src/autograd"
-                rel="noopener"
-                >src/autograd/</a
-              >,
-              <a
-                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
-                href="https://github.com/Aisuko/forge/tree/main/src/optim"
-                rel="noopener"
-                >src/optim/</a
-              >
-              — Linear, LayerNorm, Embedding with a row-chunked token table; a
-              tape-based reverse mode; AdamW.
-            </li>
-            <li>
-              <a
-                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
-                href="https://github.com/Aisuko/forge/blob/main/src/ops.rs"
-                rel="noopener"
-                >src/ops.rs</a
-              >
-              — shape-checked dispatch, one API over both backends.
-            </li>
-            <li>
-              <a
-                class="font-semibold text-ink-800 hover:text-forge-600 dark:text-ink-100"
-                href="https://github.com/Aisuko/forge/tree/main/src/backend"
-                rel="noopener"
-                >src/backend/</a
-              >
-              — the WGPU backend and the CPU reference. Every
-              <code class="font-mono">shaders/*.wgsl</code> kernel has a
-              plain-Rust twin here computing the same thing the slow, obvious
-              way; that pairing is what makes the parity claim checkable rather
-              than assertable.
-            </li>
-          </ol>
-
-          <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
-            One compatibility note worth knowing before you load a checkpoint:
-            Forge stores <code class="font-mono">Linear</code> weights as
-            <code class="font-mono">[in, out]</code> (the HuggingFace Conv1D
-            convention) rather than nanoGPT's
-            <code class="font-mono">[out, in]</code>, and reads safetensors
-            rather than PyTorch pickles — so files are not interchangeable with
-            nanoGPT <code class="font-mono">.pt</code> checkpoints.
-          </p>
-
-          <div class="mt-8 grid gap-5 md:grid-cols-2">
+          <!-- items-start, not the default stretch: the commands card is three
+               lines against the model card's four paragraphs, and stretched to
+               match it is two thirds empty box, which reads as content that
+               failed to load. -->
+          <div class="mt-8 grid items-start gap-5 md:grid-cols-2">
+            <div class="card">
+              <h3 class="font-semibold">
+                The model: <span class="font-mono">shakespeare-char</span>
+              </h3>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Trained from scratch with Forge — one GPU, one command, no
+                pretrained weights and no Python in the loop. 10.77M parameters:
+                6 blocks × 6 heads × 384 dims, a 65-character vocabulary, 256
+                characters of context, LM head weight-tied to the token
+                embedding.
+              </p>
+              <!-- #model-val is filled by demo.js from model/metrics.json,
+                   which ship_char_model.sh writes by *measuring* the weights it
+                   ships. The em dash is what a visitor sees if that file is
+                   missing; a number typed in here is what this element exists to
+                   avoid. -->
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                Held-out validation loss
+                <span id="model-val" class="font-mono">—</span>, against
+                nanoGPT's published <span class="font-mono">1.4697</span> for the
+                same configuration.
+              </p>
+              <!-- Measured 2026-07-30 on the shipped weights by the corpus probe
+                   in scripts/train_char.sh; recorded in
+                   checkpoints/campaign/report.md. Static because the probe lives
+                   in the campaign harness, not the trainer, so metrics.json has
+                   no field for it — unlike the loss above, this figure does not
+                   update itself. -->
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                The longest passage it shares with the text it was trained on is
+                <strong>24 characters</strong>, and 98% of the words it invents
+                are real words from the corpus. It is composing, not reciting.
+              </p>
+              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+                GPT-2 124M is this same code at 12 blocks, 12 heads and n_embd
+                768 — 548 MB of weights, so it runs from the CLI and is never
+                downloaded by this page.
+              </p>
+            </div>
             <div class="card">
               <div class="flex items-center justify-between gap-3">
                 <h3 class="font-semibold">Run this page locally</h3>
@@ -558,16 +610,6 @@
 ./scripts/serve_web.sh
 # plain static files — no COOP/COEP headers needed</pre>
               </div>
-            </div>
-            <div class="card">
-              <h3 class="font-semibold">Context for the section above</h3>
-              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                The model this page runs is the 10.77M-parameter character-level
-                one: context 256 characters, 65-token vocabulary, LM head
-                weight-tied to the token embedding. GPT-2 124M is the same code
-                at 12 blocks, 12 heads and n_embd 768 — 548 MB of weights, so it
-                runs from the CLI and is never downloaded by this page.
-              </p>
             </div>
           </div>
         </div>

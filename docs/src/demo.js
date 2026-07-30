@@ -11,7 +11,11 @@ const $ = (id) => document.getElementById(id);
 const panel = $("demo-panel");
 const app = $("demo-app");
 
-// Probability bars to rank. 24 fits the panel; the char vocabulary is 65.
+// Candidates the trace carries per step, out of a 65-character vocabulary.
+// decision.js draws the top eight of them and accounts for the rest in a line;
+// the extra depth is what keeps the sampled character findable when top-k is
+// raised above eight, since only a candidate present in this list can be marked
+// as the one that was chosen.
 const TOP_N = 24;
 
 // ── The grid cover ────────────────────────────────────────────────────────
@@ -103,19 +107,52 @@ async function startStage() {
     const heat = createAttention({
       canvas,
       readout: $("heat-readout"),
+      strip: $("heat-strip"),
+      caption: $("heat-caption"),
       onSelect: showPickers,
     });
     wirePickers(heat);
+    // A canvas inside a closed <details> has clientWidth 0, which draw()
+    // treats as "not laid out yet" and skips — so without this the matrix
+    // opens blank the first time and stays blank until the next trace.
+    $("heat-details")?.addEventListener("toggle", (e) => {
+      if (e.target.open) heat.redraw();
+    });
     return heat;
   } catch (e) {
-    // No 2D context, or the module itself failed to load. Drop the box
-    // entirely — an empty rectangle is worse than no rectangle — and show the
-    // panel that says the same thing in words. Generation itself is untouched,
-    // so the output text beside it keeps arriving.
-    console.warn("attention grid unavailable:", e);
-    $("heat-wrap")?.remove();
+    // No 2D context, or the module itself failed to load. Drop both views it
+    // owns — an empty rectangle is worse than no rectangle — and show the panel
+    // that says the same thing in words. Generation is untouched, and so is
+    // "What it chose": decision.js is a separate import over separate data, so
+    // the section keeps its lead panel and loses only the attention half.
+    console.warn("attention views unavailable:", e);
+    $("heat-details")?.remove();
+    $("look-card")?.remove();
     const fallback = $("stage-fallback");
     if (fallback) fallback.hidden = false;
+    return null;
+  }
+}
+
+// ── the decision panel ────────────────────────────────────────────────────
+// Independent of both WebGPU and the canvas: plain DOM over `trace.top`, which
+// Rust has been sending all along.
+
+let decisionPromise = null;
+
+function ensureDecision() {
+  decisionPromise = decisionPromise || startDecision();
+  return decisionPromise;
+}
+
+async function startDecision() {
+  const bars = $("dec-bars");
+  if (!bars) return null;
+  try {
+    const { createDecision } = await import("./decision.js");
+    return createDecision({ bars, context: $("dec-context"), note: $("dec-note") });
+  } catch (e) {
+    console.warn("decision panel unavailable:", e);
     return null;
   }
 }
@@ -172,6 +209,7 @@ if (section && "IntersectionObserver" in window) {
       if (entries.some((e) => e.isIntersecting)) {
         obs.disconnect();
         ensureStage();
+        ensureDecision();
       }
     },
     { rootMargin: "200px" },
@@ -179,6 +217,7 @@ if (section && "IntersectionObserver" in window) {
   io.observe(section);
 } else {
   ensureStage();
+  ensureDecision();
 }
 
 // ── The demo itself ───────────────────────────────────────────────────────
@@ -211,16 +250,25 @@ if (!("gpu" in navigator)) {
  * change, and a stale hard-coded figure is exactly what this replaces.
  */
 async function showQuality() {
-  const el = $("demo-quality");
-  if (!el) return;
   try {
     const m = await fetch("./model/metrics.json").then((r) =>
       r.ok ? r.json() : null,
     );
     if (!m || typeof m.val_loss !== "number") return;
+    const val = m.val_loss.toFixed(3);
+
+    // The model card quotes the same measured figure, and one source beats two
+    // places to edit. Filled first and unconditionally: it describes the model,
+    // not the browser, so it must survive a machine with no WebGPU — and
+    // explain() may already have replaced the panel holding #demo-quality.
+    const card = $("model-val");
+    if (card) card.textContent = val;
+
+    const el = $("demo-quality");
+    if (!el) return;
     const when = m.measured ? ` on ${m.measured}` : "";
     el.textContent =
-      `Held-out validation loss ${m.val_loss.toFixed(3)} on Tiny Shakespeare, ` +
+      `Held-out validation loss ${val} on Tiny Shakespeare, ` +
       `measured${when} over ${m.val_windows ?? "?"} windows of the 10% this ` +
       `model never trained on. nanoGPT's published reference for this ` +
       `configuration is 1.4697.`;
@@ -229,6 +277,10 @@ async function showQuality() {
     // No metrics file, or it is not JSON. Say nothing.
   }
 }
+
+// Not inside wire(): the card's number is a fact about the shipped weights, and
+// a visitor without WebGPU is still entitled to it.
+showQuality();
 
 function wire() {
   const status = (t) => {
@@ -347,8 +399,6 @@ function wire() {
   temp.addEventListener("input", showTemp);
   showTemp();
 
-  showQuality();
-
   // One run path, two buttons: the cover's button drives the real one so the
   // prompt, token count and sampling below always apply.
   $("stage-idle-run")?.addEventListener("click", () => $("demo-run").click());
@@ -386,6 +436,10 @@ function wire() {
       });
       stage?.reset();
 
+      const dec = await ensureDecision();
+      dec?.setVocab(model.vocab_size());
+      dec?.reset();
+
       const prompt = $("demo-prompt").value;
       const tokens = Array.from(model.tokenize_display(prompt));
       stage?.setTokens(tokens);
@@ -411,10 +465,14 @@ function wire() {
         // It is not a generated token and must not be counted as one.
         if (decodeStart === null) {
           decodeStart = performance.now();
+          dec?.setContext(s);
           return;
         }
         count += 1;
         stage?.pushToken(s);
+        // The character that settles the bars drawn by the trace before it —
+        // see onTrace. Nothing is marked when it is not among them.
+        dec?.chose(s);
         const dt = (performance.now() - decodeStart) / 1000;
         if (dt > 0) status(`generating — ${(count / dt).toFixed(1)} tok/s`);
       };
@@ -422,9 +480,14 @@ function wire() {
       const onTrace = (trace) => {
         // A failing visualization must never take generation down with it.
         try {
-          // The first trace is the moment the stage stops being a scaffold.
-          if (stage) stageGoLive();
+          // The first trace is the moment the panels stop being a scaffold.
+          if (stage || dec) stageGoLive();
           stage?.pushTrace(trace);
+          // The shortlist for the character that has not been sampled yet: the
+          // model computes a step, this fires, and only then does generation
+          // pick from it and emit. So the bars always land one callback before
+          // the onText that marks the winner.
+          dec?.pushTop(trace.top);
         } catch (e) {
           console.warn("visualization step failed:", e);
         }
@@ -457,6 +520,7 @@ function wire() {
         `${count} tokens in ${dt.toFixed(1)}s · ${rate.toFixed(1)} tok/s · ` +
           `${model.device_info()}`,
       );
+      dec?.end();
       if (count > 0) fillTiles(model, rate);
     } catch (e) {
       // console_error_panic_hook is installed by wasm::start, so a Rust panic

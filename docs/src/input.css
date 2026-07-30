@@ -6,6 +6,7 @@
 @source "./index.html";
 @source "./demo.js";
 @source "./attention.js";
+@source "./decision.js";
 
 @theme {
   --color-forge-50: #fff4ed;
@@ -117,9 +118,128 @@
     @apply overflow-x-auto;
   }
 
+  /* ── the two panels ───────────────────────────────────────────────────
+     Shared furniture for "What it chose" and "Where it looked": a heading, the
+     sentence saying what the numbers are, and a generated line underneath. */
+  .panel-h {
+    @apply font-semibold;
+  }
+
+  .panel-sub {
+    @apply mt-1 text-xs text-ink-500 dark:text-ink-300;
+  }
+
+  .panel-note,
+  .panel-caption {
+    @apply mt-2 text-xs text-ink-500 dark:text-ink-300;
+  }
+
+  /* The caption runs to two lines on a narrow column and one on a wide one.
+     Reserved, because it is rewritten on every token and the panel below it
+     must not walk up and down the page while the model generates. */
+  .panel-caption {
+    @apply min-h-8;
+  }
+
+  /* ── what it chose ────────────────────────────────────────────────────── */
+
+  /* The text being continued. Right-aligned so the caret — the place the next
+     character lands — sits still while the text grows past it. */
+  .dec-context {
+    @apply mt-3 truncate text-right font-mono text-xs text-ink-500
+           dark:text-ink-300;
+  }
+
+  .dec-context::after {
+    content: "▌";
+    @apply text-forge-600;
+  }
+
+  /* Eight of these. Reserved height for all eight from the start: they arrive
+     together on the first trace, and a panel that suddenly grows 11rem drags
+     the rest of the section down the page mid-run. */
+  #dec-bars {
+    min-height: 11rem;
+  }
+
+  /* Fixed columns rather than flex, so the glyphs, the bars and the printed
+     probabilities each line up down the panel. */
+  .bar-row {
+    @apply grid items-center gap-2 py-0.5 font-mono text-xs;
+    grid-template-columns: 1.25rem 1fr 3rem 3.5rem;
+  }
+
+  .bar-glyph {
+    @apply text-center text-ink-800 dark:text-ink-100;
+  }
+
+  .bar-track {
+    @apply block h-3 overflow-hidden rounded-sm bg-ink-100 dark:bg-ink-800;
+  }
+
+  .bar-fill {
+    @apply block h-full rounded-sm bg-forge-500/70;
+  }
+
+  .bar-p {
+    @apply text-right text-ink-500 dark:text-ink-300;
+  }
+
+  .bar-mark {
+    @apply text-[10px] tracking-wide text-forge-600 dark:text-forge-300;
+  }
+
+  /* The sampled character. It is not always the top bar — temperature and top-k
+     reshape what the model samples from — and that difference is the most
+     interesting thing this panel shows, so it gets the solid fill. */
+  .bar-row.is-chosen .bar-fill {
+    @apply bg-forge-600;
+  }
+
+  .bar-row.is-chosen .bar-glyph {
+    @apply font-semibold text-forge-700 dark:text-forge-300;
+  }
+
+  /* ── where it looked ──────────────────────────────────────────────────── */
+
+  /* One column per key, 32 of them, each holding a bar and the character it
+     belongs to. A fixed window is what keeps the labels legible — the matrix
+     drops its axes above 40 positions and a normal run is 246. */
+  .strip {
+    @apply flex items-end gap-px;
+  }
+
+  .strip-col {
+    @apply flex min-w-0 flex-1 flex-col items-stretch;
+  }
+
+  .strip-track {
+    @apply relative block h-16 rounded-sm bg-ink-100/70 dark:bg-ink-800/70;
+  }
+
+  .strip-fill {
+    @apply absolute bottom-0 left-0 w-full rounded-sm bg-forge-500;
+  }
+
+  .strip-label {
+    @apply mt-1 overflow-hidden text-center font-mono text-[10px]
+           text-ink-500 dark:text-ink-300;
+  }
+
+  /* The query attending to itself — the right-hand end of every row, and the
+     only column whose position never changes. */
+  .strip-col.is-self .strip-label {
+    @apply text-forge-600 dark:text-forge-300;
+  }
+
   /* ── the attention grid ───────────────────────────────────────────────
      Square, because the matrix is: rows are queries, columns are keys, and
      any other aspect ratio distorts the one relationship being shown. */
+  .heat-summary {
+    @apply cursor-pointer text-sm font-medium text-ink-500 select-none
+           hover:text-forge-600 dark:text-ink-300;
+  }
+
   .heat-wrap {
     @apply relative aspect-square w-full overflow-hidden rounded-2xl border
            border-ink-100 bg-ink-50/70 dark:border-ink-800 dark:bg-ink-950;

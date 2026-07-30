@@ -48,7 +48,8 @@ echo "== css"
 "$TW" -i docs/src/input.css -o "$DIST/assets/app.css" --minify
 
 echo "== html + js"
-cp docs/src/index.html docs/src/demo.js docs/src/attention.js "$DIST/"
+cp docs/src/index.html docs/src/demo.js docs/src/attention.js \
+   docs/src/decision.js "$DIST/"
 cp -r docs/static/. "$DIST/"
 
 # The kernel inventory is generated from shaders/ so the page cannot drift
