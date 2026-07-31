@@ -38,8 +38,9 @@
     </nav>
 
     <main class="wrap py-8 sm:py-12">
-      <!-- The page is meant to be read by watching it, not by reading it. The
-           only prose on the whole page is this one line. -->
+      <!-- The page leads wordlessly: the stage has to make sense before any
+           sentence does. What it is, why it exists, and what it changes are
+           answered at the bottom, for whoever wants them after watching. -->
       <header class="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p class="chip">4 models · 3.3 MB each · one voice</p>
@@ -137,6 +138,43 @@
           <p class="panel-h text-sm">the merged decision</p>
           <div id="council-bars" class="mt-3"></div>
         </div>
+      </section>
+
+      <!-- ── the three questions, answered after the watching ─────────── -->
+      <section class="mt-10 border-t border-ink-100 pt-8 dark:border-ink-800">
+        <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div class="card">
+            <h2 class="panel-h text-sm">What it is</h2>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              Four small language models, each branched from one ancestor and
+              then fine-tuned on a different quarter of Shakespeare. They run at
+              the same time on your GPU and merge their hidden vectors — not
+              their text — into one character.
+            </p>
+          </div>
+          <div class="card">
+            <h2 class="panel-h text-sm">Why we built it</h2>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              Because the embedding table is frozen and shared, all four think in
+              the same coordinates, so their vectors can simply be added
+              together. That makes the hand-off visible: which model was certain,
+              what it contributed, and where the merged answer landed.
+            </p>
+          </div>
+          <div class="card">
+            <h2 class="panel-h text-sm">What it changes</h2>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              If models can share one basis, a network stops being a single file
+              you retrain whole and becomes parts you can swap, add, or retire
+              one at a time. The merge stays something you can watch rather than
+              something you have to trust.
+            </p>
+          </div>
+        </div>
+        <p class="mt-4 text-xs text-ink-500 dark:text-ink-300">
+          All four run for every character — this is not a speed trick, and we
+          make no claim that it beats one model of the same total size.
+        </p>
       </section>
     </main>
 
