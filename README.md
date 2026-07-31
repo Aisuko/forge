@@ -4,11 +4,11 @@
 
 ## What is it
 
-Forge is the floor a dedicated, vendor-independent runtime has to stand on before it can carry real research — and eventually, local, safety-focused AI work — on hardware you control end to end.
+Forge is a runtime for training and running neural networks, aiming to be the efficient and portable one: a single Rust crate and one set of WGSL kernels, with no CUDA toolchain and no Python interpreter anywhere in the loop.
 
 ## Why
 
-Running a transformer usually means Python, a CUDA toolchain, and a dependency stack tied to one vendor's hardware. Forge is a single Rust crate that trains and infers on any GPU wgpu reaches — including a browser tab — with no CUDA, no Python interpreter, and no server round trip. That's not just a portability trick: it's the floor a dedicated, vendor-independent runtime has to stand on before it can carry real research, and eventually local, safety-focused AI work, on hardware you control end to end.
+Running a transformer usually means Python, a CUDA toolchain, and a dependency stack tied to one vendor's hardware. Forge is a single Rust crate that trains and infers on any GPU wgpu reaches — Vulkan, Metal, D3D12, and WebGPU in a browser tab — with no CUDA, no Python interpreter, and no server round trip. That's not just a portability trick. Portable and efficient is where this is going: one runtime on every device you own, down to the edge, and eventually across them — the floor a vendor-independent runtime has to stand on before it can carry real research, and eventually local, safety-focused AI work, on hardware you control end to end.
 
 ## Demo
 
@@ -58,6 +58,14 @@ let text = model.generate(&tok, "Hello Forge!", 40, Sampling::Greedy)?;
 On Linux, wgpu needs a Vulkan ICD — install `mesa-vulkan-drivers` for a
 software fallback, or run [`scripts/setup_nvidia_vulkan.sh`](scripts/setup_nvidia_vulkan.sh)
 for NVIDIA inside a container. Check with `cargo run --release --example wgpu_probe`.
+
+## Acknowledgement
+
+<a href="https://www.rmit.edu.au/about/schools-colleges/stem/research/race">
+  <img src="docs/static/PB-RACE-BLUE-SQ-2.svg" alt="Powered by RMIT University RACE" height="90">
+</a>
+
+Supported by the RACE Merit Allocation Scheme (RMAS), RMIT University.
 
 ## License
 

@@ -3,14 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Forge — how little does it take to run a language model?</title>
+    <title>Forge — an efficient, portable runtime for neural networks</title>
     <meta
       name="description"
-      content="Forge is the floor a dedicated, vendor-independent runtime has to stand on
-               before it can carry real research — and eventually, local, safety-focused AI
-               work — on hardware you control end to end. One Rust crate, 23 WGSL kernels,
-               no CUDA toolchain and no Python runtime. Read a GPT's own attention matrix,
-               head by head, on your own GPU, and measure what a token costs there."
+      content="Forge is a runtime for training and running neural networks: one Rust crate
+               and one set of WGSL kernels, no CUDA toolchain and no Python interpreter. The same
+               code runs on every GPU wgpu reaches — Vulkan, Metal, D3D12 and WebGPU in a
+               browser tab — so it goes wherever the hardware you own goes. Read a GPT's own
+               attention matrix, head by head, on your own GPU, and measure what a token
+               costs there."
     />
     <!-- Relative, never root-absolute: the site is served from /forge/, not /. -->
     <link rel="stylesheet" href="./assets/app.css" />
@@ -50,17 +51,27 @@
       <!-- ── Hero ────────────────────────────────────────────────────── -->
       <header id="top" class="wrap py-16 sm:py-24">
         <p class="chip">Rust · WebGPU · no CUDA, no Python</p>
+        <!-- Through v7 the page opened by asking how little it takes to run a
+             language model. That sells the demo, not the project: the small
+             model is a consequence of the goal, not the goal. The goal is the
+             runtime. -->
         <h1 class="mt-5 text-4xl font-bold tracking-tight sm:text-6xl">
-          How little does it take to
-          <span class="text-forge-600">run a language model</span>?
+          The most efficient, portable runtime for
+          <span class="text-forge-600">neural networks</span>.
         </h1>
         <p class="lede text-lg">
-          Forge is the floor a dedicated, vendor-independent runtime has to
-          stand on before it can carry real research — and eventually, local,
-          safety-focused AI work — on hardware you control end to end.
+          One Rust crate and one set of WGSL kernels — no CUDA toolchain, no
+          Python interpreter, no vendor to be locked to. The same code trains and runs
+          models on every GPU <code class="font-mono">wgpu</code> reaches, from
+          a workstation to a browser tab to the edge devices you own end to end.
         </p>
+        <!-- Stated as a direction, deliberately: splitting one job across
+             several devices is excluded from Roadmap V4, and the rest of this
+             page only prints numbers it measured. -->
         <p class="lede text-lg">
-          Scroll down and it will run on yours, and tell you how fast.
+          Portable and efficient is where this is going: one runtime on every
+          device you own, and eventually across them. Scroll down and it will
+          run on yours, and tell you how fast.
         </p>
         <div class="mt-8 flex flex-wrap gap-3">
           <a class="btn-primary" href="#demo">Watch it think</a>
@@ -756,20 +767,42 @@ cargo run --release --features tui \
     </main>
 
     <footer class="border-t border-ink-100 py-10 dark:border-ink-800">
+      <!-- The RMAS acknowledgement, above the licence line and separated from
+           it, so it reads as a statement rather than as another nav link.
+           The lockup is navy on transparent, so it keeps a white plaque in
+           both themes — on bg-ink-950 it would otherwise vanish, and
+           recolouring someone else's brand asset is not an option. -->
+      <div class="wrap">
+        <a
+          class="inline-flex flex-col items-start gap-4 rounded-lg sm:flex-row sm:items-center"
+          href="https://www.rmit.edu.au/partner/hubs/race"
+          rel="noopener"
+        >
+          <span class="rounded-md border border-ink-100 bg-white p-2.5 dark:border-ink-700">
+            <img
+              src="./PB-RACE-BLUE-SQ-2.svg"
+              alt="Powered by RMIT University RACE"
+              width="205"
+              height="162"
+              class="h-16 w-auto"
+            />
+          </span>
+          <span class="max-w-md text-sm text-ink-500 dark:text-ink-300">
+            Supported by the RACE Merit Allocation Scheme (RMAS), RMIT
+            University.
+          </span>
+        </a>
+      </div>
+
       <div
-        class="wrap flex flex-wrap items-center justify-between gap-4 text-sm text-ink-500 dark:text-ink-300"
+        class="wrap mt-8 flex flex-wrap items-center justify-between gap-4 border-t border-ink-100 pt-6 text-sm text-ink-500 dark:border-ink-800 dark:text-ink-300"
       >
         <p>AGPL-3.0 licensed.</p>
         <p class="flex gap-4">
           <a class="hover:text-forge-600" href="https://github.com/Aisuko/forge" rel="noopener"
             >Repository</a
           >
-          <a
-            class="hover:text-forge-600"
-            href="https://github.com/Aisuko/forge/blob/main/docs/Forge_Roadmap_V4.md"
-            rel="noopener"
-            >Roadmap</a
-          >
+          <!-- No Roadmap link: V4 is not published, so the link 404'd. -->
           <a
             class="hover:text-forge-600"
             href="https://github.com/Aisuko/forge/blob/main/LICENSE"
