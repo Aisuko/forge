@@ -1,6 +1,12 @@
 # Forge
 
 [![CI](https://github.com/Aisuko/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Aisuko/forge/actions/workflows/ci.yml)
+[![Release](https://github.com/Aisuko/forge/actions/workflows/release.yml/badge.svg)](https://github.com/Aisuko/forge/actions/workflows/release.yml)
+[![crates.io](https://img.shields.io/crates/v/forge-ml.svg)](https://crates.io/crates/forge-ml)
+[![docs.rs](https://img.shields.io/docsrs/forge-ml)](https://docs.rs/forge-ml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87-blue.svg)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[![Live demo](https://img.shields.io/badge/demo-WebGPU-8A2BE2)](https://aisuko.github.io/forge/)
 
 ## What is it
 
