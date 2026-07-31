@@ -17,7 +17,7 @@ dir="$(dirname "$SRC")"
 
 for f in "$SRC" "$dir/$stem.config.json" "$dir/$stem.vocab.json"; do
   [[ -f "$f" ]] || { echo "missing $f — train it first:" >&2
-                     echo "  cargo run --release --example train_shakespeare -- --backend wgpu" >&2
+                     echo "  cargo run --release --features train --example train_shakespeare -- --backend wgpu" >&2
                      exit 1; }
 done
 

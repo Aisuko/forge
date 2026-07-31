@@ -40,6 +40,9 @@ jobs:
       # src/models/council.rs or its wasm bindings. Lint them explicitly rather
       # than let a feature-gate quietly remove 450 lines from the gate.
       - run: cargo clippy --all-targets --locked --features council -- -D warnings
+      # And the same for `train`, for the same reason: gated code that nobody
+      # lints stops being linted the day it is gated.
+      - run: cargo clippy --all-targets --locked --features train -- -D warnings
 
   test-cpu:
     name: tests (llvmpipe)
@@ -63,9 +66,17 @@ jobs:
         run: |
           cargo test --release --locked \
             --test op_parity \
+            --test pool \
             --test tokenizer \
             --test char_model \
-            --test streaming \
+            --test streaming
+
+      # The training suites need `--features train` on the invocation itself:
+      # cargo cannot select a target whose required-features are unmet — it
+      # errors rather than skipping when the target is named explicitly.
+      - name: Test (train)
+        run: |
+          cargo test --release --locked --features train \
             --test train_ops \
             --test training \
             --test autograd

@@ -48,8 +48,9 @@ echo "== css"
 "$TW" -i docs/src/input.css -o "$DIST/assets/app.css" --minify
 
 echo "== html + js"
-cp docs/src/index.html docs/src/council.html docs/src/demo.js \
-   docs/src/attention.js docs/src/decision.js docs/src/council.js "$DIST/"
+cp docs/src/index.html docs/src/council.html docs/src/react.html docs/src/demo.js \
+   docs/src/attention.js docs/src/decision.js docs/src/council.js docs/src/react.js \
+   "$DIST/"
 cp -r docs/static/. "$DIST/"
 
 # The kernel inventory is generated from shaders/ so the page cannot drift
@@ -85,7 +86,7 @@ if [[ -d assets/shakespeare_char ]]; then
   cp assets/shakespeare_char/. "$DIST/model/" -r
 else
   echo "warning: assets/shakespeare_char/ missing — train it with" >&2
-  echo "         cargo run --release --example train_shakespeare -- --backend wgpu" >&2
+  echo "         cargo run --release --features train --example train_shakespeare -- --backend wgpu" >&2
 fi
 
 echo

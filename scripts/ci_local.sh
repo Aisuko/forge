@@ -6,7 +6,7 @@
 #   ./scripts/ci_local.sh fast   # fmt, clippy, the builds, dep-leak assert
 #   ./scripts/ci_local.sh full   # everything in fast, plus the release tests
 #
-# Both optional features (`council`, `tui`) get their own explicit runs. A
+# Every optional feature (`council`, `train`, `tui`) gets its own explicit run. A
 # feature nobody builds is a feature that rots.
 #
 # `fast` runs on pre-commit (~6s with a warm target/), `full` on pre-push
@@ -71,6 +71,11 @@ run "cargo clippy -D warnings"     cargo clippy --all-targets --locked -- -D war
 # `--all-features`: the latter would pull the five TUI deps into every lint pass,
 # and keeping them out of the default tree is what the check below is about.
 run "clippy --features council"    cargo clippy --all-targets --locked --features council -- -D warnings
+# Same argument for `train`: autograd, optim, the nine backward kernels and four
+# test/example targets are invisible to the pass above. No matching wasm build,
+# though — nothing on the site turns `train` on, and the default wasm build
+# below is what proves it compiles *out*.
+run "clippy --features train"      cargo clippy --all-targets --locked --features train -- -D warnings
 # Two wasm builds for two different claims: the default one proves the council
 # compiles *out* (what a dependent gets), the second that it compiles *in* (what
 # scripts/build_web.sh ships to the site).
@@ -87,9 +92,10 @@ if [[ "$STAGE" == full ]]; then
     printf '%snote: models/gpt2/ missing — gpt2_e2e and kv_cache will self-skip%s\n' "$DIM" "$OFF"
     printf '%s      run ./scripts/download_gpt2.sh for full coverage%s\n' "$DIM" "$OFF"
   fi
-  # `--features council` is a superset of the default suite: it adds
-  # tests/council.rs, which cargo would otherwise skip on required-features.
-  run "cargo test --release"       cargo test --release --locked --features council
+  # A superset of the default suite: `council` adds tests/council.rs and
+  # `train` adds autograd/training/train_ops, all of which cargo would
+  # otherwise skip on required-features.
+  run "cargo test --release"       cargo test --release --locked --features council,train
 fi
 
 printf '\n%s%s✓ all %s checks passed%s %s(%ss)%s\n' \

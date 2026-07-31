@@ -49,6 +49,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 # and stay unconditional.
 council = []
 
+# Training: autograd, AdamW, and the backward kernels. Off by default because
+# Forge is an inference runtime that also happens to train — a dependent doing
+# inference should not compile a tape it never records, and `src/wasm.rs`
+# exports no training at all, so in the browser bundle that code is provably
+# dead. Like `council` this gates code, not a dependency tree.
+train = []
+
 # The `forge-top` TUI. Kept behind a feature so its deps never reach the wasm
 # build or the library's dependents — verify with
 # `cargo tree -e normal | grep -c ratatui` -> 0.
@@ -76,6 +83,25 @@ required-features = ["council"]
 [[test]]
 name = "council"
 required-features = ["council"]
+
+# The training targets. Same pattern as `council`: cargo skips them under a
+# default build instead of failing to compile them, which is what keeps
+# `cargo package --locked` green.
+[[test]]
+name = "training"
+required-features = ["train"]
+
+[[test]]
+name = "autograd"
+required-features = ["train"]
+
+[[test]]
+name = "train_ops"
+required-features = ["train"]
+
+[[example]]
+name = "train_shakespeare"
+required-features = ["train"]
 
 [dependencies]
 bytemuck = "1"

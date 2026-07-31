@@ -26,7 +26,7 @@ mkdir -p "$DIR" logs
 
 if [[ $BRANCH_ONLY -eq 0 ]]; then
   echo "== ancestor (full corpus, 3000 steps)"
-  cargo run --release --example train_shakespeare -- \
+  cargo run --release --features train --example train_shakespeare -- \
     "${COMMON[@]}" --steps 3000 --eval-every 250 \
     --checkpoint "$DIR/ancestor.safetensors" | tee logs/council_ancestor.log
 fi
@@ -40,7 +40,7 @@ for k in $(seq 0 $((N - 1))); do
   echo "== expert $k — $label"
   # --resume reads the checkpoint it will also write, so branch by copying.
   cp "$ANCESTOR" "$DIR/expert$k.safetensors"
-  cargo run --release --example train_shakespeare -- \
+  cargo run --release --features train --example train_shakespeare -- \
     "${COMMON[@]}" --resume --freeze-embeddings \
     --data "data/council/$k.txt" \
     --steps 800 --lr 3e-4 --no-cosine --warmup 50 --eval-every 100 \

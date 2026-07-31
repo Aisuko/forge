@@ -100,7 +100,7 @@ mkdir -p "$OUT"
 
 if [[ $MODE != report ]]; then
   say "== building"
-  cargo build --release --example train_shakespeare --example generate || exit 1
+  cargo build --release --features train --example train_shakespeare --example generate || exit 1
 fi
 
 # ── scoring ──────────────────────────────────────────────────────────────────

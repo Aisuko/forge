@@ -46,6 +46,13 @@ RUNTIME_FETCHES = {
         "./council/config.json",
         "./council/vocab.json",
     ],
+    # react.html loads the same char model as index.html, but eagerly — a 404
+    # here breaks the page on open rather than on a button press.
+    "react.html": [
+        "./model/model.safetensors",
+        "./model/config.json",
+        "./model/vocab.json",
+    ],
 }
 
 pages = sorted(dist.glob("*.html"))

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::backend::wgpu::{OFFSET_ALIGN_BYTES, WgpuContext};
+use crate::backend::wgpu::{OFFSET_ALIGN_BYTES, PooledBuffer, WgpuContext};
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::error::{ForgeError, Result};
@@ -15,9 +15,21 @@ pub enum CpuStorage {
 #[derive(Clone)]
 pub struct WgpuStorage {
     pub ctx: Arc<WgpuContext>,
-    pub buf: Arc<wgpu::Buffer>,
+    /// Recycled through the context's free list when the last handle drops
+    /// (see [`PooledBuffer`]). `pub(crate)` rather than `pub`: it was only ever
+    /// public by accident, and `buffer()` is the supported way to reach the
+    /// underlying `wgpu::Buffer`.
+    pub(crate) buf: Arc<PooledBuffer>,
     /// View offset into `buf`, in elements.
     pub offset: usize,
+}
+
+impl WgpuStorage {
+    /// The underlying GPU buffer. `offset` is *not* applied — a storage is a
+    /// view, and the offset is the caller's to add.
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        &self.buf
+    }
 }
 
 impl std::fmt::Debug for WgpuStorage {
@@ -204,9 +216,7 @@ impl Tensor {
         let mut regions = Vec::with_capacity(tensors.len());
         for t in tensors {
             match &t.storage {
-                Storage::Wgpu(s) => {
-                    regions.push((s.buf.as_ref(), s.offset * 4, t.shape.numel() * 4))
-                }
+                Storage::Wgpu(s) => regions.push((s.buffer(), s.offset * 4, t.shape.numel() * 4)),
                 // A host tensor has nothing to stage, so a mixed batch would
                 // misalign the results with their inputs.
                 Storage::Cpu(_) => return Err(mixed()),

@@ -76,16 +76,21 @@ let text = model.generate(&tok, "ROMEO:", 40, Sampling::Greedy)?;
 
 ## Optional features
 
-The default build is the runtime and nothing else — tensors, kernels, autograd,
-GPT-2, tokenizers. Two features sit outside it, both off by default:
+The default build is the **inference** runtime — tensors, kernels, GPT-2,
+tokenizers, serialization. Three features sit outside it, all off by default:
 
 | Feature | What it adds | Why it's optional |
 | --- | --- | --- |
 | `council` | `Council` — several small GPT-2s run on one prompt in parallel, exchanging hidden states rather than text, merged by an entropy router. [Live page](https://aisuko.github.io/forge/council.html). | It is composition *over* the runtime: no extra dependency, no extra kernel, nothing a caller couldn't write against the public API. The primitives it stands on — `Gpt2::hidden_step`, `logits_from_hidden`, `wte_host` — are core and always available. |
+| `train` | reverse-mode autograd, AdamW, the nine backward kernels, and `Gpt2::loss` / `loss_grads`. Needed by `examples/train_shakespeare.rs` and `make train`. | Forge is an inference runtime that also happens to train. `cargo add forge-ml` should not compile a tape you never record, and `src/wasm.rs` exports no training at all. Construction and serialization — `Gpt2::init_random`, `params`, `save_safetensors` — are *not* gated: they are not training, and the inference tests use them. |
 | `tui` | the `forge-top` terminal model browser and run dashboard | It pulls five dependencies that have no business reaching a library's dependents or a wasm bundle. |
 
 ```toml
-forge-ml = { version = "0.1", features = ["council"] }
+forge-ml = { version = "0.2", features = ["train"] }
+```
+
+```bash
+cargo run --release --features train --example train_shakespeare -- --backend wgpu
 ```
 
 On Linux, wgpu needs a Vulkan ICD — install `mesa-vulkan-drivers` for a

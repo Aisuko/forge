@@ -86,11 +86,12 @@ check: ## Fast gate: fmt, clippy, wasm + tui builds, dep-leak assert (~6s)
 check-full: ## Everything in check, plus the release test suite (~1m10s)
 	./scripts/ci_local.sh full
 
-# `--features council` on both: the feature is off by default, so without it
-# cargo silently skips tests/council.rs and clippy never sees the module. These
-# match what scripts/ci_local.sh runs.
+# `--features council,train` on both: they are off by default, so without them
+# cargo silently skips tests/council.rs, tests/training.rs, tests/autograd.rs
+# and tests/train_ops.rs, and clippy never sees the modules. These match what
+# scripts/ci_local.sh runs.
 test: ## Run the release test suite only
-	cargo test --release --locked --features council
+	cargo test --release --locked --features council,train
 
 test-parity: ## The numeric parity suites against the PyTorch goldens
 	cargo test --release --test op_parity
@@ -102,6 +103,7 @@ fmt: ## Format the workspace
 clippy: ## Lint with warnings denied
 	cargo clippy --all-targets --locked -- -D warnings
 	cargo clippy --all-targets --locked --features council -- -D warnings
+	cargo clippy --all-targets --locked --features train -- -D warnings
 
 # ── setup ────────────────────────────────────────────────────────────────────
 

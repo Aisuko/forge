@@ -14,7 +14,20 @@ pub fn alloc_storage(ctx: &Arc<WgpuContext>, numel: usize) -> WgpuStorage {
 fn alloc(ctx: &Arc<WgpuContext>, numel: usize) -> WgpuStorage {
     WgpuStorage {
         ctx: ctx.clone(),
-        buf: Arc::new(ctx.create_storage(numel * 4)),
+        buf: Arc::new(ctx.create_pooled(numel * 4)),
+        offset: 0,
+    }
+}
+
+/// An output buffer guaranteed to be all zeros.
+///
+/// `alloc` recycles, and a recycled buffer holds whatever the last op left in
+/// it. Only for kernels that write part of their output and need the remainder
+/// zero — see `unsplit_head`, the sole caller.
+fn alloc_zeroed(ctx: &Arc<WgpuContext>, numel: usize) -> WgpuStorage {
+    WgpuStorage {
+        ctx: ctx.clone(),
+        buf: Arc::new(ctx.create_zeroed(numel * 4)),
         offset: 0,
     }
 }
@@ -427,8 +440,10 @@ pub fn dropout(x: &WgpuStorage, n: usize, p: f32, scale: f32, seed: u32) -> Wgpu
 
 pub fn unsplit_head(d: &WgpuStorage, t: usize, c: usize, h: usize, which: usize) -> WgpuStorage {
     let n = t * c;
-    // Fresh wgpu buffers are zero-initialized; the kernel writes one third.
-    let out = alloc(&d.ctx, t * 3 * c);
+    // The kernel writes one third and needs the other two to be zero, so this
+    // is the one op that must not take a recycled buffer. `alloc` here silently
+    // corrupts wte gradients — it did, before `alloc_zeroed` existed.
+    let out = alloc_zeroed(&d.ctx, t * 3 * c);
     d.ctx.dispatch(
         "unsplit_heads",
         &[t as u32, c as u32, h as u32, which as u32],

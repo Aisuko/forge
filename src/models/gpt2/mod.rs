@@ -7,6 +7,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::Deserialize;
 
+#[cfg(feature = "train")]
 use crate::autograd::{TVar, Tape};
 use crate::device::Device;
 use crate::error::{ForgeError, Result};
@@ -260,6 +261,19 @@ impl KvCache {
     }
 }
 
+/// Per-position surprisal from [`Gpt2::surprisal_async`]. All three vectors are
+/// the length of the input, and index 0 is a placeholder in each — nothing
+/// precedes the first token.
+#[derive(Clone, Debug)]
+pub struct Surprisal {
+    /// `-log2 p(ids[i] | ids[..i])`, in bits.
+    pub bits: Vec<f32>,
+    /// The token the model would have chosen at this position.
+    pub top: Vec<u32>,
+    /// How probable the model thought its own choice was, in `0..=1`.
+    pub top_p: Vec<f32>,
+}
+
 impl Gpt2 {
     /// Load HF GPT-2 weights. `path` is the .safetensors file. Weight names
     /// may or may not carry the "transformer." prefix; both are accepted.
@@ -469,6 +483,8 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
+        // One command buffer for the whole pass instead of one per kernel.
+        let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, 0)?;
         for block in &self.blocks {
@@ -506,6 +522,10 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
+        // As in `hidden`: one submit for the step, not one per kernel. The
+        // probe paths read tensors back mid-pass, which flushes and reopens —
+        // correct, and the reason drawing the attention costs what it does.
+        let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, pos)?;
         // The embedding is only worth a round trip when the detail stages are
@@ -570,6 +590,9 @@ impl Gpt2 {
     /// Full logits [t, vocab] — used by verification tests.
     /// The LM head is wte-tied: logits = h @ wte^T.
     pub fn forward(&self, ids: &[u32]) -> Result<Tensor> {
+        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
+        // same command buffer: one submit for the whole step.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         ops::matmul_chunked_transb(&h, &self.emb.wte_chunks, 1.0)
     }
@@ -577,6 +600,9 @@ impl Gpt2 {
     /// Logits for the last position only, recomputing the full context
     /// (no cache) — the reference decode path used by verification tests.
     pub fn logits_last(&self, ids: &[u32]) -> Result<Vec<f32>> {
+        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
+        // same command buffer: one submit for the whole step.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
@@ -585,6 +611,9 @@ impl Gpt2 {
     /// Last-position logits for `ids` continuing from `cache` (incremental
     /// decode: pass the full prompt once, then one token at a time).
     pub fn logits_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
+        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
+        // same command buffer: one submit for the whole step.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
@@ -593,6 +622,9 @@ impl Gpt2 {
     /// Async form of [`Gpt2::logits_step`] — identical math; the readback is
     /// awaited so it works on wasm32 (roadmap v4, pitfall 14).
     pub async fn logits_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
+        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
+        // same command buffer: one submit for the whole step.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?
@@ -777,7 +809,83 @@ impl Gpt2 {
         Ok((logits, trace))
     }
 
-    // ---- training (roadmap v4, Stages 8-10) ----
+    /// How surprised the model was by text that is already there.
+    ///
+    /// This is reading, not writing: for each position the model is asked what
+    /// it expected *before* seeing the character that actually followed, and
+    /// the answer is scored against what did. It is a teacher-forced scoring
+    /// pass, so the whole sequence costs **one forward pass** rather than `t`
+    /// decode steps — the model reads a paragraph in the time it would take to
+    /// generate one character.
+    ///
+    /// `bits[i]` is `-log2 p(ids[i] | ids[..i])`: 0 means "entirely expected",
+    /// and `log2(vocab_size)` is what a uniform guess would score.
+    /// `bits[0]` is 0 — nothing precedes the first token, so nothing about it
+    /// can be a surprise.
+    ///
+    /// `top[i]` and `top_p[i]` are the token the model would have picked at
+    /// that position and how sure it was, which is what makes a surprise
+    /// legible: "it expected `e` here" says more than a number.
+    ///
+    /// The softmax and the gather are done on the host deliberately. The GPU
+    /// ops that would do them (`ops::softmax` over `[t, vocab]`, and
+    /// `ops::gather_nll`) sit behind the `train` feature, and for a
+    /// character-level vocabulary the host loop is free. Note the cost model
+    /// for a BPE model, though: the readback is `t × vocab × 4` bytes, which
+    /// for GPT-2's 50257-token vocabulary is ~196 KB per position.
+    pub async fn surprisal_async(&self, ids: &[u32]) -> Result<Surprisal> {
+        let t = ids.len();
+        if t == 0 {
+            return Err(ForgeError::Shape(
+                "surprisal needs a non-empty sequence".into(),
+            ));
+        }
+        let vocab = self.config.vocab_size;
+        let logits = self.forward(ids)?.to_vec_f32_async().await?;
+
+        let mut out = Surprisal {
+            bits: vec![0.0; t],
+            top: vec![ids[0]; t],
+            top_p: vec![0.0; t],
+        };
+        // Position i is predicted by row i-1: the model saw ids[..i] and the
+        // logits it produced there are its guess about ids[i].
+        for i in 1..t {
+            let row = &logits[(i - 1) * vocab..i * vocab];
+            // Log-sum-exp in the stable form; a char model's logits are small,
+            // but a shifted exp costs nothing and cannot overflow.
+            let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = row.iter().map(|l| (l - max).exp()).sum();
+            let log_z = max + sum.ln();
+
+            let target = ids[i] as usize;
+            if target >= vocab {
+                return Err(ForgeError::Shape(format!(
+                    "token id {target} >= vocab_size {vocab}"
+                )));
+            }
+            // nats -> bits: a bit is the unit a reader can reason about.
+            out.bits[i] = -(row[target] - log_z) / std::f32::consts::LN_2;
+
+            let (best, best_logit) = row
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, l)| (i as u32, *l))
+                .unwrap_or((0, 0.0));
+            out.top[i] = best;
+            out.top_p[i] = (best_logit - log_z).exp();
+        }
+        Ok(out)
+    }
+
+    // ---- construction, parameters, serialization ----
+    //
+    // Motivated by training but not gated behind it: `init_random` builds a
+    // model, `params`/`param_specs` name its tensors and `save_safetensors`
+    // writes them. None records a tape, and `tests/streaming.rs` and
+    // `tests/council.rs` — both pure inference — call `init_random`. Only
+    // `loss` and `loss_grads` below are `#[cfg(feature = "train")]`.
 
     /// Random initialization for training from scratch: N(0, 0.02) weights,
     /// residual projections scaled by 1/sqrt(2*n_layer), zero biases,
@@ -990,6 +1098,8 @@ impl Gpt2 {
         Ok(out)
     }
 
+    #[cfg(feature = "train")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     /// Mean cross-entropy of `targets` given `input`, forward only — no tape,
     /// no gradients, no dropout. This is the evaluation path: a validation
     /// split scored with [`Gpt2::loss_grads`] would build and discard a full
@@ -1009,6 +1119,8 @@ impl Gpt2 {
         Ok(nll.iter().sum::<f32>() / t as f32)
     }
 
+    #[cfg(feature = "train")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     /// One training forward + backward on a single sequence: mean
     /// cross-entropy of `targets` given `input`, and gradients for every
     /// parameter in `param_specs` order. Batching is achieved by

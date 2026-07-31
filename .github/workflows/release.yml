@@ -54,6 +54,9 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       # `council` is off by default; without this the gate stops seeing it.
       - run: cargo clippy --all-targets --locked --features council -- -D warnings
+      # And the same for `train`, for the same reason: gated code that nobody
+      # lints stops being linted the day it is gated.
+      - run: cargo clippy --all-targets --locked --features train -- -D warnings
 
       # docs.rs renders this crate; broken intra-doc links are a shipped defect.
       # `--all-features` because that is what docs.rs itself builds with (see
@@ -73,9 +76,17 @@ jobs:
         run: |
           cargo test --release --locked \
             --test op_parity \
+            --test pool \
             --test tokenizer \
             --test char_model \
-            --test streaming \
+            --test streaming
+
+      # The training suites need `--features train` on the invocation itself:
+      # cargo cannot select a target whose required-features are unmet — it
+      # errors rather than skipping when the target is named explicitly.
+      - name: Test (train)
+        run: |
+          cargo test --release --locked --features train \
             --test train_ops \
             --test training \
             --test autograd
