@@ -30,31 +30,63 @@ problems = []
 if not (dist / ".nojekyll").exists():
     problems.append(".nojekyll is missing; Jekyll will ignore _-prefixed paths")
 
-refs = set(re.findall(r'(?:src|href)="([^"]+)"', html))
 imap = re.search(r'<script type="importmap">(.*?)</script>', html, re.S)
 importmap = json.loads(imap.group(1))["imports"] if imap else {}
-refs |= set(importmap.values())
 
-# Fetched at runtime, so they must ship even though no tag names them.
-refs |= {"./model/model.safetensors", "./model/config.json", "./model/vocab.json"}
+# Fetched at runtime, so they must ship even though no tag names them. Keyed by
+# page: a 404 here is invisible until a visitor presses Run.
+RUNTIME_FETCHES = {
+    "index.html": [
+        "./model/model.safetensors",
+        "./model/config.json",
+        "./model/vocab.json",
+    ],
+    "council.html": [
+        "./council/manifest.json",
+        "./council/config.json",
+        "./council/vocab.json",
+    ],
+}
 
-ids = set(re.findall(r'\bid="([^"]+)"', html))
-for r in sorted(refs):
-    if r.startswith("#"):
-        if r[1:] not in ids:
-            problems.append(f"in-page link to a missing anchor: {r}")
-        continue
-    if r.startswith(("http://", "https://", "//")):
-        # A stylesheet, script, or module from another origin would break the
-        # "no external network requests at runtime" guarantee; anchors are OK.
-        if re.search(rf'(?:src|rel="stylesheet"[^>]*href)="{re.escape(r)}"', html):
-            problems.append(f"cross-origin runtime asset: {r}")
-        continue
-    if r.startswith("/"):
-        problems.append(f"root-absolute path (404 under /forge/): {r}")
-        continue
-    if not (dist / r.lstrip("./")).exists():
-        problems.append(f"missing asset (would 404): {r}")
+pages = sorted(dist.glob("*.html"))
+if not pages:
+    sys.exit("no HTML pages in the build")
+
+for page in pages:
+    text = page.read_text()
+    name = page.name
+    where = f"{name}: "
+    refs = set(re.findall(r'(?:src|href)="([^"]+)"', text))
+    refs |= set(importmap.values()) if name == "index.html" else set()
+    refs |= set(RUNTIME_FETCHES.get(name, []))
+
+    ids = set(re.findall(r'\bid="([^"]+)"', text))
+    for r in sorted(refs):
+        if r.startswith("#"):
+            if r[1:] not in ids:
+                problems.append(f"{where}in-page link to a missing anchor: {r}")
+            continue
+        if r.startswith(("http://", "https://", "//")):
+            # A stylesheet, script, or module from another origin would break the
+            # "no external network requests at runtime" guarantee; anchors are OK.
+            if re.search(rf'(?:src|rel="stylesheet"[^>]*href)="{re.escape(r)}"', text):
+                problems.append(f"{where}cross-origin runtime asset: {r}")
+            continue
+        if r.startswith("/"):
+            problems.append(f"{where}root-absolute path (404 under /forge/): {r}")
+            continue
+        # A link to another page may carry a fragment; the file is what has to
+        # exist. (Anchors *within* the target page are the target's business.)
+        path = r.split("#", 1)[0]
+        if not (dist / path.lstrip("./")).exists():
+            problems.append(f"{where}missing asset (would 404): {r}")
+
+# The council's expert weights are named by its own manifest, not by any tag.
+council_manifest = dist / "council" / "manifest.json"
+if council_manifest.exists():
+    for e in json.loads(council_manifest.read_text())["experts"]:
+        if not (dist / "council" / e["file"]).exists():
+            problems.append(f"council.html: manifest names a missing expert: {e['file']}")
 
 # ── Module graph ──────────────────────────────────────────────────────────
 # Static (`from "x"`, `import "x"`, `export … from "x"`) and dynamic
@@ -107,6 +139,8 @@ if problems:
 
 total = sum(f.stat().st_size for f in dist.rglob("*") if f.is_file())
 CORE = ["index.html", "assets/app.css", "demo.js", "attention.js"]
+# council.html is a second entry point with its own budget-free payload;
+# the budget below is about the landing page a visitor lands on cold.
 blobs = [(dist / f).read_bytes() for f in CORE if (dist / f).exists()]
 core = sum(len(b) for b in blobs)
 # Budgeted on the compressed size, because that is what a visitor downloads:

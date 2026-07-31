@@ -7,6 +7,8 @@
 @source "./demo.js";
 @source "./attention.js";
 @source "./decision.js";
+@source "./council.html";
+@source "./council.js";
 
 @theme {
   --color-forge-50: #fff4ed;

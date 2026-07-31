@@ -16,6 +16,8 @@ on:
       - 'docs/**'
       - 'src/**' # the wasm bundle is rebuilt from source on every deploy
       - 'assets/shakespeare_char/**'
+      - 'assets/council/**'
+      - 'scripts/build_web.sh'
       - 'shaders/**' # the kernel inventory is generated from this directory
       - 'scripts/build_site.sh'
       - 'scripts/gen_kernels.py'

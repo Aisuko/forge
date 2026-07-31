@@ -42,6 +42,10 @@ cargo run --release --example train_shakespeare -- --backend wgpu
 # Terminal model browser + run dashboard
 cargo run --release --features tui --bin forge-top -- --path models/
 
+# A council of four small models, deciding one character together
+./scripts/train_council.sh
+cargo run --release --features council --example council_demo -- --prompt "ROMEO:"
+
 # Website + in-browser WebGPU demo
 ./scripts/build_site.sh && ./scripts/serve_web.sh
 
@@ -68,6 +72,20 @@ let config = Gpt2Config::from_json("assets/shakespeare_char/config.json")?;
 let model = Gpt2::from_safetensors("assets/shakespeare_char/model.safetensors", config, &device)?;
 let tok = AnyTokenizer::from_dir("assets/shakespeare_char")?;
 let text = model.generate(&tok, "ROMEO:", 40, Sampling::Greedy)?;
+```
+
+## Optional features
+
+The default build is the runtime and nothing else — tensors, kernels, autograd,
+GPT-2, tokenizers. Two features sit outside it, both off by default:
+
+| Feature | What it adds | Why it's optional |
+| --- | --- | --- |
+| `council` | `Council` — several small GPT-2s run on one prompt in parallel, exchanging hidden states rather than text, merged by an entropy router. [Live page](https://aisuko.github.io/forge/council.html). | It is composition *over* the runtime: no extra dependency, no extra kernel, nothing a caller couldn't write against the public API. The primitives it stands on — `Gpt2::hidden_step`, `logits_from_hidden`, `wte_host` — are core and always available. |
+| `tui` | the `forge-top` terminal model browser and run dashboard | It pulls five dependencies that have no business reaching a library's dependents or a wasm bundle. |
+
+```toml
+forge-ml = { version = "0.1", features = ["council"] }
 ```
 
 On Linux, wgpu needs a Vulkan ICD — install `mesa-vulkan-drivers` for a

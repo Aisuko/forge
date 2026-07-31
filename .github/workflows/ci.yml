@@ -36,6 +36,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      # `council` is off by default, so the pass above never sees
+      # src/models/council.rs or its wasm bindings. Lint them explicitly rather
+      # than let a feature-gate quietly remove 450 lines from the gate.
+      - run: cargo clippy --all-targets --locked --features council -- -D warnings
 
   test-cpu:
     name: tests (llvmpipe)
@@ -66,6 +70,13 @@ jobs:
             --test training \
             --test autograd
 
+      # tests/council.rs needs no weights — it builds tiny models with
+      # Gpt2::init_random on Device::Cpu. The feature flag is required on the
+      # invocation itself: cargo cannot select a target whose required-features
+      # are unmet.
+      - name: Test (council)
+        run: cargo test --release --locked --features council --test council
+
   build-wasm:
     name: build wasm32
     runs-on: ubuntu-latest
@@ -76,6 +87,9 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --target wasm32-unknown-unknown
+      # The bundle scripts/build_web.sh actually ships to the site. The build
+      # above proves the council compiles *out*; this one, that it compiles *in*.
+      - run: cargo build --release --locked --features council --target wasm32-unknown-unknown
 
   build-tui:
     name: build forge-top

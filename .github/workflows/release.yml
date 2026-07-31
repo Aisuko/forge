@@ -52,10 +52,15 @@ jobs:
 
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      # `council` is off by default; without this the gate stops seeing it.
+      - run: cargo clippy --all-targets --locked --features council -- -D warnings
 
       # docs.rs renders this crate; broken intra-doc links are a shipped defect.
+      # `--all-features` because that is what docs.rs itself builds with (see
+      # [package.metadata.docs.rs]) — otherwise the council's doc comments ship
+      # unchecked to the one place they are rendered.
       - name: Rustdoc (no warnings)
-        run: cargo doc --no-deps --locked
+        run: cargo doc --no-deps --locked --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -74,8 +79,13 @@ jobs:
             --test train_ops \
             --test training \
             --test autograd
+          # Separate run: the `council` target is unselectable without its
+          # feature, so the flag has to be on the invocation.
+          cargo test --release --locked --features council --test council
 
       - run: cargo build --release --locked --target wasm32-unknown-unknown
+
+      - run: cargo build --release --locked --features council --target wasm32-unknown-unknown
 
       - run: cargo build --release --locked --features tui --bin forge-top
 

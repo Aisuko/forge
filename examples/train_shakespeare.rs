@@ -57,7 +57,19 @@ struct Args {
     early_stop: usize,
     /// Load the checkpoint, evaluate it, print JSON, exit. No training.
     eval_only: bool,
+    /// Text to train and validate on. The **vocabulary always comes from the
+    /// full corpus** regardless, so a model fine-tuned on a slice keeps token
+    /// ids that mean the same thing everywhere.
+    data: String,
+    /// Hold `wte` and `wpe` fixed. This is what makes the council's experts
+    /// commensurable: branched from one ancestor with the embeddings frozen,
+    /// they share a basis and a wte-tied decoder, so their hidden states can
+    /// be added. Unfreeze them and the merge is meaningless.
+    freeze_embeddings: bool,
 }
+
+/// Corpus the vocabulary is always derived from, whatever `--data` says.
+const FULL_CORPUS: &str = "data/tinyshakespeare.txt";
 
 /// Per-tokenizer defaults. The char run reproduces nanoGPT's
 /// `config/train_shakespeare_char.py`; the BPE run keeps the Stage 10 config
@@ -98,6 +110,8 @@ fn defaults(tokenizer: &str) -> Args {
         eval_windows: 512,
         early_stop: 0,
         eval_only: false,
+        data: FULL_CORPUS.into(),
+        freeze_embeddings: false,
     }
 }
 
@@ -143,22 +157,32 @@ fn parse_args() -> Args {
             "--eval-windows" => a.eval_windows = val().parse().unwrap(),
             "--early-stop" => a.early_stop = val().parse().unwrap(),
             "--eval-only" => a.eval_only = true,
+            "--data" => a.data = val(),
+            "--freeze-embeddings" => a.freeze_embeddings = true,
             other => panic!("unknown flag {other}"),
         }
     }
     a
 }
 
-fn corpus() -> String {
-    std::fs::read_to_string("data/tinyshakespeare.txt")
-        .expect("run scripts/download_shakespeare.sh first")
+fn corpus(path: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("cannot read {path} ({e}) — run scripts/download_shakespeare.sh")
+    })
 }
 
-/// Encode the corpus, caching the ids on disk. The cache is **keyed by
-/// tokenizer**: reusing BPE ids for a char model would train on ids that index
-/// a 65-row embedding table with values up to 50256.
-fn load_tokens(tok: &AnyTokenizer, text: &str) -> Vec<u32> {
-    let cache = format!("data/tinyshakespeare.{}.ids", tok.kind());
+/// Encode the corpus, caching the ids on disk. The cache is keyed by
+/// **tokenizer and by data file**: reusing BPE ids for a char model would train
+/// on ids that index a 65-row embedding table with values up to 50256, and
+/// reusing the full corpus's ids for a `--data` slice would train every
+/// council expert on the whole corpus while claiming otherwise.
+fn load_tokens(tok: &AnyTokenizer, text: &str, data: &str) -> Vec<u32> {
+    let stem = std::path::Path::new(data)
+        .with_extension("")
+        .to_string_lossy()
+        .replace('/', "_");
+    let cache = format!("data/.ids/{stem}.{}.ids", tok.kind());
+    std::fs::create_dir_all("data/.ids").ok();
     if let Ok(bytes) = std::fs::read(&cache) {
         return bytes
             .chunks_exact(4)
@@ -231,20 +255,29 @@ fn main() {
     };
     println!("device: {}", device.describe());
 
-    let text = corpus();
+    // The vocabulary is a property of the whole corpus, never of `--data`:
+    // deriving it from a slice would give each council expert a different
+    // meaning for the same token id.
+    let vocab_text = corpus(FULL_CORPUS);
+    let text = if a.data == FULL_CORPUS {
+        vocab_text.clone()
+    } else {
+        corpus(&a.data)
+    };
     let tok = match a.tokenizer.as_str() {
-        "char" => AnyTokenizer::Char(CharTokenizer::from_corpus(&text)),
+        "char" => AnyTokenizer::Char(CharTokenizer::from_corpus(&vocab_text)),
         _ => AnyTokenizer::bpe(
             Gpt2Tokenizer::from_dir("models/gpt2").expect("run scripts/download_gpt2.sh first"),
         ),
     };
     let vocab_size = tok.vocab_size();
-    let ids = load_tokens(&tok, &text);
+    let ids = load_tokens(&tok, &text, &a.data);
     // nanoGPT's split: the last 10% of the corpus is never trained on.
     let split = ((ids.len() as f64) * (1.0 - VAL_FRACTION)) as usize;
     let (train_ids, val_ids) = ids.split_at(split);
     println!(
-        "corpus: {} {} tokens (vocab {vocab_size}) — {} train / {} val",
+        "corpus: {} — {} {} tokens (vocab {vocab_size}) — {} train / {} val",
+        a.data,
         ids.len(),
         tok.kind(),
         train_ids.len(),
@@ -308,12 +341,26 @@ fn main() {
         ..Default::default()
     };
     let specs = model.param_specs();
+    // `wte` and `wpe` are the first two entries of `param_specs`, by contract.
+    let frozen: Vec<bool> = specs
+        .iter()
+        .map(|(name, _)| a.freeze_embeddings && (name == "wte.weight" || name == "wpe.weight"))
+        .collect();
+    if a.freeze_embeddings {
+        let n = frozen.iter().filter(|f| **f).count();
+        assert_eq!(n, 2, "expected to freeze wte and wpe, matched {n} params");
+        println!("freezing wte + wpe: gradients zeroed and weight decay disabled");
+    }
     let mut opt = {
         let params = model.params().unwrap();
         let with_decay: Vec<(&forge::Tensor, bool)> = params
             .iter()
             .zip(&specs)
-            .map(|(p, (_, d))| (*p, *d))
+            .zip(&frozen)
+            // Zeroing the gradient is not enough on its own: AdamW's weight
+            // decay is decoupled, so a "frozen" param with a zero gradient
+            // would still shrink by lr*wd*p on every step.
+            .map(|((p, (_, d)), f)| (*p, *d && !f))
             .collect();
         AdamW::new(&with_decay, opts).unwrap()
     };
@@ -387,7 +434,11 @@ fn main() {
         let grads: Vec<forge::Tensor> = grads_acc
             .unwrap()
             .iter()
-            .map(|g| forge::ops::scale(g, 1.0 / a.accum as f32).unwrap())
+            .zip(&frozen)
+            .map(|(g, f)| {
+                let s = if *f { 0.0 } else { 1.0 / a.accum as f32 };
+                forge::ops::scale(g, s).unwrap()
+            })
             .collect();
         let mut params = model.params_mut().unwrap();
         let norm = opt.step(&mut params, &grads).unwrap();

@@ -14,7 +14,11 @@ cd "$(dirname "$0")/.."
 
 out="${1:-docs/dist/forge}"
 
-cargo build --release --target wasm32-unknown-unknown
+# `council` is off by default in Cargo.toml — it is research composed on top of
+# the runtime, not part of it, so a crate that depends on forge-ml should not pay
+# for it. The site is the one build that wants it: docs/src/council.html drives
+# the WasmCouncil bindings, which only exist with this flag.
+cargo build --release --target wasm32-unknown-unknown --features council
 mkdir -p "$out"
 wasm-bindgen --target web --out-dir "$out" \
     target/wasm32-unknown-unknown/release/forge.wasm

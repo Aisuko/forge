@@ -48,8 +48,8 @@ echo "== css"
 "$TW" -i docs/src/input.css -o "$DIST/assets/app.css" --minify
 
 echo "== html + js"
-cp docs/src/index.html docs/src/demo.js docs/src/attention.js \
-   docs/src/decision.js "$DIST/"
+cp docs/src/index.html docs/src/council.html docs/src/demo.js \
+   docs/src/attention.js docs/src/decision.js docs/src/council.js "$DIST/"
 cp -r docs/static/. "$DIST/"
 
 # The kernel inventory is generated from shaders/ so the page cannot drift
@@ -68,6 +68,16 @@ fi
 # these native-WGPU ids when the page is opened with ?gate.
 if [[ -f tests/data/gate_expected.json ]]; then
   cp tests/data/gate_expected.json "$DIST/gate_expected.json"
+fi
+
+# The council page's four experts. Absent on a clone that has not run
+# scripts/train_council.sh — the page then says so rather than 404-ing silently.
+if [[ -d assets/council ]]; then
+  mkdir -p "$DIST/council"
+  cp assets/council/. "$DIST/council/" -r
+else
+  echo "warning: assets/council/ missing — build it with" >&2
+  echo "         ./scripts/train_council.sh && ./scripts/ship_council.sh" >&2
 fi
 
 if [[ -d assets/shakespeare_char ]]; then

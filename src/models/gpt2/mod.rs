@@ -600,6 +600,62 @@ impl Gpt2 {
             .await
     }
 
+    /// The last position's hidden state **after the final LayerNorm** —
+    /// `[n_embd]`, exactly the vector [`Gpt2::logits_step`] hands to the head.
+    ///
+    /// This is the only stage at which two models' activations can be merged
+    /// and still decode: it is what `wte^T` multiplies, so models that share a
+    /// (frozen) `wte` share a basis here and nowhere else. Anything deeper —
+    /// per-head Q/K/V, the post-GELU MLP hidden — is private to one model.
+    pub fn hidden_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
+        let h = self.hidden_cached(ids, cache, None)?;
+        h.narrow_rows(ids.len() - 1, 1)?.to_vec_f32()
+    }
+
+    /// Async form of [`Gpt2::hidden_step`] — identical math, awaited readback
+    /// so it works on wasm32.
+    pub async fn hidden_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
+        let h = self.hidden_cached(ids, cache, None)?;
+        h.narrow_rows(ids.len() - 1, 1)?.to_vec_f32_async().await
+    }
+
+    /// Logits for a hidden state supplied from outside: `h @ wte^T`, the same
+    /// wte-tied head every other decode path applies. Lets a vector this model
+    /// did not produce — a merge of several models' [`Gpt2::hidden_step`]
+    /// outputs, say — be decoded to a distribution over the vocabulary.
+    pub fn logits_from_hidden(&self, h: &[f32]) -> Result<Vec<f32>> {
+        ops::matmul_chunked_transb(&self.hidden_tensor(h)?, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
+    }
+
+    /// Async form of [`Gpt2::logits_from_hidden`].
+    pub async fn logits_from_hidden_async(&self, h: &[f32]) -> Result<Vec<f32>> {
+        ops::matmul_chunked_transb(&self.hidden_tensor(h)?, &self.emb.wte_chunks, 1.0)?
+            .to_vec_f32_async()
+            .await
+    }
+
+    /// The token embedding table as host floats, chunks reassembled. Exists so
+    /// a council can verify its experts really do share one `wte` — the
+    /// invariant that makes merging their hidden states mean anything.
+    pub fn wte_host(&self) -> Result<Vec<f32>> {
+        let mut out = Vec::with_capacity(self.config.vocab_size * self.config.n_embd);
+        for chunk in &self.emb.wte_chunks {
+            out.extend(chunk.to_vec_f32()?);
+        }
+        Ok(out)
+    }
+
+    fn hidden_tensor(&self, h: &[f32]) -> Result<Tensor> {
+        if h.len() != self.config.n_embd {
+            return Err(ForgeError::Shape(format!(
+                "hidden state has {} elements, expected n_embd {}",
+                h.len(),
+                self.config.n_embd
+            )));
+        }
+        Tensor::from_f32(h, [1, self.config.n_embd], &self.emb.wpe.device())
+    }
+
     /// [`Gpt2::logits_step_async`] plus every block's attention probabilities
     /// for this step, in layer order.
     ///
@@ -1347,7 +1403,7 @@ fn emit_valid_prefix(bytes: &[u8], mut sent: usize, on_text: &mut impl FnMut(&st
 /// picks from it, but the picture is of the model.
 ///
 /// No GPU work: the logits were already read back for sampling.
-fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
+pub(crate) fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
     let n = n.min(logits.len());
     if n == 0 {
         return Vec::new();
@@ -1372,7 +1428,7 @@ fn bias(l: &Linear) -> Result<&Tensor> {
         .ok_or_else(|| ForgeError::Shape("training requires biases".into()))
 }
 
-fn sample(logits: &[f32], sampling: Sampling, rng: Option<&mut StdRng>) -> u32 {
+pub(crate) fn sample(logits: &[f32], sampling: Sampling, rng: Option<&mut StdRng>) -> u32 {
     match sampling {
         Sampling::Greedy => argmax(logits),
         Sampling::TopK { k, temperature, .. } => {

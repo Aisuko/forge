@@ -32,7 +32,23 @@ include = [
 name = "forge"
 crate-type = ["rlib", "cdylib"]
 
+# docs.rs builds with default features, and `council` is not one of them — without
+# this, `Council` would simply be absent from the published documentation. The
+# `docsrs` cfg is what turns on the `doc(cfg(...))` feature badges in src/lib.rs.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
+# The council: several small GPT-2s run on one prompt in parallel and merged in
+# their own hidden space. Pure composition over the runtime — it adds no
+# dependency and no WGSL kernel, so unlike `tui` this gates code rather than a
+# dependency tree. Off by default because it is research built *on* the runtime
+# rather than part of it; the runtime primitives it stands on
+# (`Gpt2::hidden_step`, `logits_from_hidden`, `wte_host`) are useful on their own
+# and stay unconditional.
+council = []
+
 # The `forge-top` TUI. Kept behind a feature so its deps never reach the wasm
 # build or the library's dependents — verify with
 # `cargo tree -e normal | grep -c ratatui` -> 0.
@@ -48,6 +64,18 @@ tui = [
 name = "forge-top"
 path = "src/bin/forge-top/main.rs"
 required-features = ["tui"]
+
+# Declaring these does not turn off autodiscovery of the other examples and
+# tests — cargo merges explicit targets with discovered ones. `required-features`
+# makes cargo skip them under a default build instead of failing to compile
+# them, which is also what keeps `cargo package` green.
+[[example]]
+name = "council_demo"
+required-features = ["council"]
+
+[[test]]
+name = "council"
+required-features = ["council"]
 
 [dependencies]
 bytemuck = "1"

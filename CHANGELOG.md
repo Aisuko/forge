@@ -28,6 +28,13 @@ no CUDA toolchain and no Python interpreter in the loop.
   <https://aisuko.github.io/forge/>.
 - **`forge-top`** — an optional terminal model browser and run dashboard behind
   the `tui` feature, so its dependencies never reach the library's dependents.
+- **Council** — `Council`, several small GPT-2s run on one prompt in parallel,
+  exchanging hidden states rather than text and merged by an entropy router.
+  Behind the optional `council` feature: it composes over the runtime rather than
+  belonging to it, adding no dependency and no WGSL kernel. The runtime
+  primitives it rests on — `Gpt2::hidden_step`, `Gpt2::logits_from_hidden` and
+  `Gpt2::wte_host`, which split a model's body from its wte-tied head — are core
+  and unconditional.
 
 ### Verification
 
