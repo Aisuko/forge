@@ -4,7 +4,7 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.2.0
+## [0.2.0] — 2026-07-31
 
 The inference release. v0.1.0 said "it runs anywhere"; this one is about how
 fast it runs, and about saying plainly what Forge is.
@@ -72,6 +72,27 @@ fast it runs, and about saying plainly what Forge is.
 NVIDIA RTX A5000, Vulkan, `assets/shakespeare_char` (6 layers, n_embd 384).
 Reproduce with `cargo run --release --example bench`.
 
+### Deferred, and why
+
+This release was scoped to include int8 quantisation, kernel fusion and
+multi-sequence batching. The benchmark above is the reason none of them landed:
+the remaining 4.26 ms of decode is **1.49 ms host readback, ~1.0 ms CPU-side
+recording, ~1.8 ms GPU execution**. The arithmetic is 41% of decode, so
+quantisation and fusion compete for the smallest share.
+
+- **Multi-sequence batching — dropped.** Nothing consumes it; the site runs one
+  sequence and the council runs its models sequentially.
+- **Kernel fusion — deferred.** ~18 of 99 dispatches per token, ~10% of decode,
+  against a new WGSL kernel plus its CPU reference and parity cases in
+  perpetuity.
+- **int8 — deferred to 0.2.1, for the download rather than the arithmetic.** The
+  shipped char model is 43 MB of f32 that a visitor downloads before the page
+  renders. Shipping int8 and dequantising at load makes that ~11 MB with no new
+  kernel.
+- **GPU-side sampling — 0.2.1, and ranked above all of the above.** Removing the
+  per-token host round trip takes 1.49 ms out of 4.26. It was not on the
+  original list; the benchmark found it.
+
 ## [0.1.0] — 2026-07-31
 
 First public release. Forge is a single Rust crate that trains and runs GPT-2 on
@@ -109,4 +130,5 @@ no CUDA toolchain and no Python interpreter in the loop.
 CPU↔WGPU parity to a max logit difference of 8.4e-5, and Forge↔HuggingFace
 transformers to 1.75e-4, on GPT-2 124M weights on an NVIDIA RTX A5000.
 
+[0.2.0]: https://github.com/Aisuko/forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Aisuko/forge/releases/tag/v0.1.0

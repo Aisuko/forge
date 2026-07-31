@@ -59,7 +59,7 @@ As a library:
 # The crate publishes as `forge-ml` (the name `forge` was taken on crates.io in
 # 2017); the library it builds is still `forge`, so imports read `use forge::…`.
 [dependencies]
-forge-ml = "0.1"
+forge-ml = "0.2"
 ```
 
 ```rust
