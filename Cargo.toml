@@ -1,10 +1,35 @@
 [package]
-name = "forge"
+# `forge` was taken on crates.io in 2017, so the crate publishes as `forge-ml`.
+# `[lib] name` below keeps the import path `use forge::...` for dependents.
+name = "forge-ml"
 version = "0.1.0"
 edition = "2024"
+# 1.85 for edition 2024, but src/tensor.rs uses integer `is_multiple_of`, which
+# landed in 1.87 — clippy's incompatible_msrv lint holds this honest.
+rust-version = "1.87"
 license = "AGPL-3.0-only"
+description = "A WebGPU-native machine learning runtime in Rust: train and run GPT-2 on any GPU wgpu reaches, with no CUDA and no Python"
+repository = "https://github.com/Aisuko/forge"
+homepage = "https://aisuko.github.io/forge/"
+documentation = "https://docs.rs/forge-ml"
+readme = "README.md"
+keywords = ["machine-learning", "webgpu", "wgpu", "gpt2", "transformer"]
+categories = ["science", "wasm", "graphics"]
+# Everything else in the repo — the 43 MB char checkpoint, the website, the
+# scripts — is repo furniture, not crate content. Without this the tarball is
+# 38.8 MiB and crates.io rejects it at 10 MiB; with it, 439 KiB. The WGSL is
+# not optional: src/backend/wgpu/mod.rs pulls every shader in via include_str!.
+include = [
+    "src/**/*.rs",
+    "shaders/*.wgsl",
+    "examples/*.rs",
+    "tests/**/*",
+    "README.md",
+    "LICENSE",
+]
 
 [lib]
+name = "forge"
 crate-type = ["rlib", "cdylib"]
 
 [features]

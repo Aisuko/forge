@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/d3487d8f-40a1-4c84-9f98-d4a7c5ce1550
 # Generate — the 43 MB char-level Shakespeare model ships in the repo
 cargo run --release --example generate -- --model assets/shakespeare_char --prompt "ROMEO:"
 
-# Or with real GPT-2 124M weights
+# Real GPT-2 124M weights — the parity run from tests/gpt2_e2e.rs
 ./scripts/download_gpt2.sh
 cargo run --release --example generate -- --backend wgpu --prompt "Hello Forge!"
 
@@ -45,14 +45,23 @@ cargo test --release
 
 As a library:
 
-```rust
-use forge::{Device, Gpt2, Gpt2Config, Gpt2Tokenizer, Sampling};
+```toml
+# The crate publishes as `forge-ml` (the name `forge` was taken on crates.io in
+# 2017); the library it builds is still `forge`, so imports read `use forge::…`.
+[dependencies]
+forge-ml = "0.1"
+```
 
+```rust
+use forge::{AnyTokenizer, Device, Gpt2, Gpt2Config, Sampling};
+
+// assets/shakespeare_char ships in the repo; swap in models/gpt2 after
+// running download_gpt2.sh — AnyTokenizer picks char or BPE by what it finds.
 let device = Device::wgpu()?; // or Device::Cpu
-let config = Gpt2Config::from_json("models/gpt2/config.json")?;
-let model = Gpt2::from_safetensors("models/gpt2/model.safetensors", config, &device)?;
-let tok = Gpt2Tokenizer::from_dir("models/gpt2")?;
-let text = model.generate(&tok, "Hello Forge!", 40, Sampling::Greedy)?;
+let config = Gpt2Config::from_json("assets/shakespeare_char/config.json")?;
+let model = Gpt2::from_safetensors("assets/shakespeare_char/model.safetensors", config, &device)?;
+let tok = AnyTokenizer::from_dir("assets/shakespeare_char")?;
+let text = model.generate(&tok, "ROMEO:", 40, Sampling::Greedy)?;
 ```
 
 On Linux, wgpu needs a Vulkan ICD — install `mesa-vulkan-drivers` for a

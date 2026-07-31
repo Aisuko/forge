@@ -603,11 +603,6 @@
                 <strong>24 characters</strong>, and 98% of the words it invents
                 are real words from the corpus. It is composing, not reciting.
               </p>
-              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                GPT-2 124M is this same code at 12 blocks, 12 heads and n_embd
-                768 — 548 MB of weights, so it runs from the CLI and is never
-                downloaded by this page.
-              </p>
             </div>
             <div class="card">
               <div class="flex items-center justify-between gap-3">
@@ -727,24 +722,33 @@ cargo run --release --example train_shakespeare -- \
           <h2 class="h2">Quick start</h2>
           <p class="lede">
             Rust edition 2024 and a Vulkan, Metal, or D3D12 driver. No Python,
-            no CUDA toolkit.
+            no CUDA toolkit. The first command needs no download either — the
+            model from the demo above is in the repository.
           </p>
 
           <div class="mt-8 grid gap-5 md:grid-cols-2">
             <div class="card">
               <div class="flex items-center justify-between gap-3">
-                <h3 class="font-semibold">Generate with GPT-2 124M (local CLI)</h3>
+                <h3 class="font-semibold">Generate — no download</h3>
                 <button class="btn-ghost text-xs" type="button" data-copy="cmd-generate">
                   Copy
                 </button>
               </div>
               <div class="scroll-x mt-3">
-                <pre id="cmd-generate" class="font-mono text-xs leading-relaxed"># fetch weights + tokenizer
-./scripts/download_gpt2.sh
-
+                <pre id="cmd-generate" class="font-mono text-xs leading-relaxed"># the 43 MB char model is in the repo
 cargo run --release --example generate -- \
-  --backend wgpu --prompt "Hello Forge!"</pre>
+  --model assets/shakespeare_char --prompt "ROMEO:"</pre>
               </div>
+              <!-- GPT-2 is demoted, not dropped: it is the reproduction path
+                   for the hero's parity line, not a second way to start. -->
+              <p class="mt-3 text-sm text-ink-500 dark:text-ink-300">
+                Same binary, real weights:
+                <code class="font-mono">./scripts/download_gpt2.sh</code>, then
+                drop the <code class="font-mono">--model</code> flag to run
+                GPT-2 124M — the run
+                <code class="font-mono">tests/gpt2_e2e.rs</code> checks against
+                HuggingFace.
+              </p>
             </div>
 
             <div class="card">

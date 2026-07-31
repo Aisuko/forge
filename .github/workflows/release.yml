@@ -1,0 +1,119 @@
+name: Release to crates.io
+
+# Publishing is driven from GitHub Releases: tag a commit `vX.Y.Z`, publish the
+# release, and this workflow ships that exact version to crates.io as `forge-ml`.
+# Nothing publishes on push — the release is the deliberate act.
+#
+# Auth is crates.io Trusted Publishing: the job exchanges the run's OIDC identity
+# for a short-lived registry token, so no CARGO_REGISTRY_TOKEN secret exists to
+# leak. One-time setup on crates.io -> forge-ml -> Settings -> Trusted Publishing:
+# owner `Aisuko`, repository `forge`, workflow `release.yml`.
+#
+# The gates below mirror .github/workflows/ci.yml, which is the manual-dispatch
+# mirror of the local hooks (scripts/ci_local.sh). Same caveat applies: hosted
+# runners have no NVIDIA GPU and no models/gpt2, so WGPU tests run against Mesa
+# lavapipe and the weight-dependent suites stay a local, pre-push concern.
+
+on:
+  release:
+    types: [published]
+  # Dry run — everything except the publish step, so the pipeline can be proven
+  # before a real release depends on it.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify tag + gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # A release tagged v0.1.1 against a Cargo.toml still saying 0.1.0 would
+      # publish the wrong version under the right name. Fail before that.
+      - name: Tag must match the manifest version
+        if: github.event_name == 'release'
+        run: |
+          manifest=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["packages"][0]["version"])')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$manifest" != "$tag" ]; then
+            echo "::error::release tag $GITHUB_REF_NAME does not match Cargo.toml version $manifest"
+            exit 1
+          fi
+          echo "publishing forge-ml $manifest"
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+      # docs.rs renders this crate; broken intra-doc links are a shipped defect.
+      - name: Rustdoc (no warnings)
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Install software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+
+      - name: Test (weight-independent suites)
+        run: |
+          cargo test --release --locked \
+            --test op_parity \
+            --test tokenizer \
+            --test char_model \
+            --test streaming \
+            --test train_ops \
+            --test training \
+            --test autograd
+
+      - run: cargo build --release --locked --target wasm32-unknown-unknown
+
+      - run: cargo build --release --locked --features tui --bin forge-top
+
+      # The TUI deps must never reach the library's dependents or the wasm
+      # build; they are optional, behind the `tui` feature, for that reason.
+      - name: Assert the default build pulls no TUI dependencies
+        run: |
+          for dep in ratatui crossterm sysinfo nvml-wrapper memmap2; do
+            n=$(cargo tree -e normal --locked | grep -c "^.*[^a-z-]$dep v" || true)
+            if [ "$n" -ne 0 ]; then
+              echo "::error::$dep leaked into the default dependency tree"
+              exit 1
+            fi
+          done
+
+      # crates.io rejects anything over 10 MiB. The `include` list in Cargo.toml
+      # is what keeps this at ~440 KiB rather than 38.8 MiB; this proves it
+      # still holds, and that the tarball compiles standalone.
+      - name: Package (verifies the tarball builds on its own)
+        run: cargo package --locked
+
+  publish:
+    name: cargo publish
+    needs: verify
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      # Required to mint the OIDC token that crates.io trades for a registry token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

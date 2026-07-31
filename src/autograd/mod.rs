@@ -1,6 +1,6 @@
 //! Tape-based reverse-mode autograd (roadmap v4, Stage 8).
 //!
-//! Define-by-run: a training forward records one [`Node`] per op on the
+//! Define-by-run: a training forward records one `Node` per op on the
 //! [`Tape`]; [`Tape::backward`] sweeps the nodes in reverse, composing each
 //! backward pass out of the already-verified forward ops (matmul with
 //! trans_a/trans_b, add, sum_rows) plus the dedicated backward kernels

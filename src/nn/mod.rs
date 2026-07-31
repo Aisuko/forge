@@ -74,7 +74,7 @@ impl Embedding {
         })
     }
 
-    /// ids: u32 tensor [t]; `pos` is the absolute position of ids[0].
+    /// ids: u32 tensor `[t]`; `pos` is the absolute position of `ids[0]`.
     pub fn forward(&self, ids: &Tensor, pos: usize) -> Result<Tensor> {
         ops::embedding_chunked(ids, &self.wte_chunks, self.chunk_rows, Some(&self.wpe), pos)
     }

@@ -368,7 +368,7 @@ pub fn sum_rows(x: &WgpuStorage, rows: usize, cols: usize) -> WgpuStorage {
     out
 }
 
-/// dst[ids[r]] += src[r], in place (CAS-loop f32 atomics).
+/// `dst[ids[r]] += src[r]`, in place (CAS-loop f32 atomics).
 pub fn scatter_add_rows(
     dst: &WgpuStorage,
     ids: &WgpuStorage,

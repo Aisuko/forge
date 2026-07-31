@@ -17,10 +17,10 @@ pub fn gelu(x: &[f32]) -> Vec<f32> {
 }
 
 /// Batched matmul matching `shaders/matmul.wgsl`:
-/// C[b] = alpha * A[b] @ B[b] (+ bias broadcast over rows).
+/// `C[b] = alpha * A[b] @ B[b]` (+ bias broadcast over rows).
 /// `a_stride`/`b_stride` are per-batch element strides (0 broadcasts).
-/// With `trans_a`, A[b] is stored [k, m]; with `trans_b`, B[b] is stored
-/// [n, k] instead of [k, n].
+/// With `trans_a`, `A[b]` is stored `[k, m]`; with `trans_b`, `B[b]` is stored
+/// `[n, k]` instead of `[k, n]`.
 #[allow(clippy::too_many_arguments)]
 pub fn matmul(
     a: &[f32],
@@ -305,7 +305,7 @@ pub fn layernorm_bwd_dparams(
     (dgamma, dbeta)
 }
 
-/// Column sums: [rows, cols] -> [cols]. Bias gradients.
+/// Column sums: `[rows, cols]` -> `[cols]`. Bias gradients.
 pub fn sum_rows(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; cols];
     for r in 0..rows {
@@ -316,7 +316,7 @@ pub fn sum_rows(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     out
 }
 
-/// dwte scatter-add: dst[ids[r]] += src[r] for rows of width c.
+/// dwte scatter-add: `dst[ids[r]] += src[r]` for rows of width `c`.
 pub fn scatter_add_rows(dst: &mut [f32], ids: &[u32], src: &[f32], c: usize) {
     for (r, &id) in ids.iter().enumerate() {
         let d0 = id as usize * c;
@@ -326,7 +326,7 @@ pub fn scatter_add_rows(dst: &mut [f32], ids: &[u32], src: &[f32], c: usize) {
     }
 }
 
-/// -log(probs[r, ids[r]]) per row.
+/// `-log(probs[r, ids[r]])` per row.
 pub fn gather_nll(probs: &[f32], ids: &[u32], cols: usize) -> Vec<f32> {
     ids.iter()
         .enumerate()

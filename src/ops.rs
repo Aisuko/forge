@@ -106,9 +106,9 @@ impl Default for MatmulSpec {
 
 /// Batched matmul with optional A/B-transpose, scaling, and bias.
 ///
-/// A: [m, k] or [batch, m, k] ([k, m] with trans_a); B: [k, n] ([n, k]
-/// transposed), optionally batched. A rank-2 operand broadcasts across the
-/// batch. Bias: [n].
+/// A: `[m, k]` or `[batch, m, k]` (`[k, m]` with `trans_a`); B: `[k, n]`
+/// (`[n, k]` transposed), optionally batched. A rank-2 operand broadcasts
+/// across the batch. Bias: `[n]`.
 pub fn matmul(a: &Tensor, b: &Tensor, bias: Option<&Tensor>, spec: MatmulSpec) -> Result<Tensor> {
     same_device(&[a, b])?;
     if let Some(bias) = bias {
@@ -279,7 +279,7 @@ pub fn layernorm(x: &Tensor, gamma: &Tensor, beta: &Tensor, eps: f32) -> Result<
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
-/// Fused token + positional embedding: out[t] = wte[ids[t]] + wpe[t + pos].
+/// Fused token + positional embedding: `out[t] = wte[ids[t]] + wpe[t + pos]`.
 pub fn embedding(ids: &Tensor, wte: &Tensor, wpe: Option<&Tensor>, pos: usize) -> Result<Tensor> {
     let chunk_rows = wte
         .shape()
@@ -553,7 +553,7 @@ pub fn layernorm_bwd(
     }
 }
 
-/// Column sums over all leading dims: [.., cols] -> [cols]. Bias gradients.
+/// Column sums over all leading dims: `[.., cols]` -> `[cols]`. Bias gradients.
 pub fn sum_rows(x: &Tensor) -> Result<Tensor> {
     let (rows, cols) = last_dim_rows(x)?;
     let storage = match x.storage() {
@@ -565,7 +565,7 @@ pub fn sum_rows(x: &Tensor) -> Result<Tensor> {
     Ok(f32_tensor(storage, Shape::new(&[cols])))
 }
 
-/// dst[ids[r]] += src[r], in place. Embedding-table gradient scatter.
+/// `dst[ids[r]] += src[r]`, in place. Embedding-table gradient scatter.
 pub fn scatter_add_rows(dst: &mut Tensor, ids: &Tensor, src: &Tensor) -> Result<()> {
     same_device(&[dst, ids, src])?;
     let (vocab, c) = match dst.shape().dims() {
@@ -601,7 +601,7 @@ pub fn scatter_add_rows(dst: &mut Tensor, ids: &Tensor, src: &Tensor) -> Result<
     }
 }
 
-/// Per-row NLL: out[r] = -log(probs[r, ids[r]]).
+/// Per-row NLL: `out[r] = -log(probs[r, ids[r]])`.
 pub fn gather_nll(probs: &Tensor, ids: &Tensor) -> Result<Tensor> {
     same_device(&[probs, ids])?;
     let (rows, cols) = last_dim_rows(probs)?;
