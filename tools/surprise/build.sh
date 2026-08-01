@@ -43,5 +43,9 @@ else
 fi
 
 echo
-python3 "$root/tools/shared/check_site.py" "$DIST"
+if [[ $WITH_WASM -eq 1 ]]; then
+  python3 "$root/tools/shared/check_site.py" "$DIST"
+else
+  echo "skipping check_site.py: --no-wasm leaves the module graph unresolvable" >&2
+fi
 echo "serve: python3 -m http.server -d $DIST 8081"

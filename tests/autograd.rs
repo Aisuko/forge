@@ -1,4 +1,4 @@
-//! Stage 8 gates (roadmap v4): analytic gradients match central-difference
+//! Analytic gradients match central-difference
 //! numerical gradients on a small random-init model (CPU reference), and
 //! CPU vs WGPU gradients agree per parameter.
 

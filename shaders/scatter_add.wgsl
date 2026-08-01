@@ -1,6 +1,6 @@
 // Embedding backward: dst[ids[r]] += src[r] (rows of width c).
 // WGSL has no f32 atomicAdd, so this uses a compare-exchange loop over the
-// f32 bits (roadmap v4, pitfall 9). One thread per src element.
+// f32 bits. One thread per src element.
 
 struct Params {
     t: u32,

@@ -1,25 +1,17 @@
 name: Release to crates.io
 
-# Publishing is driven from GitHub Releases: tag a commit `vX.Y.Z`, publish the
-# release, and this workflow ships that exact version to crates.io as `forge-ml`.
-# Nothing publishes on push — the release is the deliberate act.
+# Tag a commit `vX.Y.Z` and publish the GitHub Release; this ships that version
+# to crates.io as `forge-ml`. Nothing publishes on push.
 #
-# Auth is crates.io Trusted Publishing: the job exchanges the run's OIDC identity
-# for a short-lived registry token, so no CARGO_REGISTRY_TOKEN secret exists to
-# leak. One-time setup on crates.io -> forge-ml -> Settings -> Trusted Publishing:
-# owner `Aisuko`, repository `forge`, workflow `release.yml`.
+# Auth is crates.io Trusted Publishing — the run's OIDC identity is exchanged
+# for a short-lived token, so there is no CARGO_REGISTRY_TOKEN to leak. Set up
+# on crates.io -> forge-ml -> Settings -> Trusted Publishing, with owner
+# `Aisuko`, repository `forge`, workflow `release.yml`.
 #
-# The verify job below deliberately does NOT re-run fmt, clippy, the builds or
-# the test suite. Those are the pre-push gate (.githooks/pre-push ->
-# scripts/ci_local.sh full), which runs the whole suite on a machine with an
-# NVIDIA RTX A5000 and models/gpt2/ present — strictly stronger than what a
-# hosted runner with software Vulkan and no weights could prove. Re-running a
-# weaker copy here buys nothing and fails for reasons the release cannot fix.
-#
-# What remains is only what the local gate cannot check, and what is specific to
-# the act of publishing: the tag matching the manifest, the docs.rs render, and
-# the tarball. `cargo package` compiles the packaged crate standalone, so a
-# release that does not build still cannot ship.
+# verify does not re-run fmt, clippy, the builds or the tests: those are the
+# pre-push gate on a machine with a GPU and models/gpt2/, which a hosted runner
+# cannot match. What is left is only what publishing adds — the tag matching
+# the manifest, the docs.rs render, and a tarball that compiles standalone.
 
 on:
   release:
@@ -40,9 +32,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # A release tagged v0.1.1 against a Cargo.toml still saying 0.1.0 would
-      # publish the wrong version under the right name. Fail before that.
-      # `packages` is workspace-wide and unordered, so pick forge-ml by name.
+      # A tag that disagrees with the manifest publishes the wrong version
+      # under the right name. `packages` is workspace-wide and unordered, so
+      # pick forge-ml by name.
       - name: Tag must match the manifest version
         if: github.event_name == 'release'
         run: |
@@ -55,20 +47,17 @@ jobs:
           fi
           echo "publishing forge-ml $manifest"
 
-      # docs.rs renders this crate; broken intra-doc links are a shipped defect,
-      # and unlike a test failure they cannot be fixed without a new version.
-      # `--all-features` because that is what docs.rs itself builds with (see
-      # [package.metadata.docs.rs]) — and it is the only all-features compile
-      # anywhere in the pipeline.
+      # A broken intra-doc link is a shipped defect: unlike a test failure it
+      # cannot be fixed without a new version. `--all-features` matches what
+      # docs.rs itself builds with.
       - name: Rustdoc (no warnings)
         run: cargo doc -p forge-ml --no-deps --locked --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # crates.io rejects anything over 10 MiB. The `include` list in Cargo.toml
-      # is what keeps this at ~440 KiB rather than 38.8 MiB; this proves it
-      # still holds, and that the tarball compiles standalone — a property no
-      # workspace build, local or otherwise, ever exercises.
+      # crates.io rejects anything over 10 MiB; the `include` list keeps this at
+      # ~440 KiB. `cargo package` also compiles the tarball standalone, which no
+      # workspace build exercises.
       - name: Package (verifies the tarball builds on its own)
         run: cargo package -p forge-ml --locked
 

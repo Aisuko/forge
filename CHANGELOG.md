@@ -4,6 +4,92 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The site, which 0.3.0 deferred, and the removal of dispatch scopes.
+
+### Removed
+
+- **Dispatch scopes.** `Device::dispatch_scope()`, `WgpuContext::scope()`,
+  `WgpuContext::flush()` and the `DispatchScope` guard are gone; every
+  `dispatch` again creates its own command encoder, its own compute pass and its
+  own `queue.submit`. This is a breaking API change, and it gives back the
+  headline win of 0.2.0 — the cost is what that release measured, in the other
+  direction:
+
+  | | with scopes | without |
+  | --- | --- | --- |
+  | decode, ms/token | 3.832 | **6.626** (1.73× slower) |
+  | decode, tokens/sec | 261 | **151** |
+  | submits per decoded token | 1 | **100** |
+  | prompt encode, ms/token | 0.120 | **0.231** (1.93× slower) |
+  | submits, 128-token session | 798 | **79,800** |
+
+  NVIDIA RTX A5000, Vulkan, `assets/shakespeare_char`. Reproduce with
+  `cargo run --release --example bench`. The device counters and the buffer pool
+  are unaffected — `buffers/token` stays at 1.0 either way.
+- The two dispatch-scope tests in `tests/pool.rs`. The pool's own two
+  invariants — recycled contents must not change results, and `unsplit_head`
+  must zero the thirds it does not write — are still covered.
+
+### Added
+
+- **The site is back, and it is one artifact.** `scripts/build_site.sh`
+  composes `docs/dist/` from the landing page in `docs/src/` and both tool pages
+  in `tools/*/web/`, sharing one core wasm bundle, one `app.css` and one copy of
+  the 43 MB checkpoint — 61 MB, against 101 MB if the three pages were
+  assembled from three self-contained artifacts. `.github/workflows/pages.yml`
+  deploys it. Each tool page still builds standalone.
+- **`make site-verify`** (`scripts/check_pages.py`) drives all three pages in
+  headless Chromium on a real GPU: press Run, wait for output, assert on the
+  DOM, fail on any console error or 4xx. `check_site.py` proves an artifact
+  resolves; this proves it runs. Deliberately not in CI — hosted runners have no
+  GPU, so `requestAdapter()` returns null and every page fails there for a
+  reason no code change can fix.
+- `scripts/ci_local.sh fast` now builds the site (~0.5 s, both wasm crates
+  already compiled by the steps above it), so a page naming a moved asset fails
+  at commit time. That failure was live in this repository until now.
+
+### Changed
+
+- Both tools depend on `forge-ml = { path = "../..", version = "0.3" }`.
+  `path` is what the workspace resolves; `version` is only sayable because
+  0.3.0 shipped, and makes each manifest a publishable shape. They stay
+  `publish = false`: they demonstrate the runtime, they are not libraries to
+  depend on.
+- `check_site.py` separates errors from warnings. A missing asset or an
+  unresolvable module specifier is an error — the page is broken before a line
+  runs. A hyperlink to a page the artifact does not ship is a warning, which is
+  the normal state of a standalone tool build; the composed site is built with
+  `--strict`, where it is an error. The size budget is now per page, not per
+  artifact.
+- `scripts/build_web.sh` takes a package name, so one script builds both the
+  core and the council bundles. The council's bundle lands in `forge-council/`,
+  because in a shared artifact `forge/` is the core's.
+- Comments throughout state one fact in the shortest sentence that carries it.
+  The `roadmap v4, Stage N` and `pitfall N` references are gone: they pointed at
+  a directory that is not in the repository. The Vulkan-in-a-container
+  diagnosis moved from a 42-line script header into `CONTRIBUTING.md`, where a
+  reader will find it.
+
+### Fixed
+
+- `build_site.sh` ended in `check_site.py … || true`, so it exited 0 while
+  reporting three missing assets. The site build had been broken since
+  `assets/council/` moved, and nothing said so.
+
+### Removed
+
+- The duplicate copies of `council.{html,js}`, `react.{html,js}`, `input.css`
+  and `check_site.py` under `docs/`. Each page and each piece of furniture now
+  has exactly one definition, in the tool that owns it.
+- The dead `Cargo.lock` line in `.gitignore`. The lockfile is tracked, and
+  every gate passes `--locked`.
+- `docs/static/.nojekyll`. The Pages artifact is served as uploaded and Jekyll
+  never runs on it, so the file did nothing — and
+  `upload-pages-artifact` v4 onwards excludes dotfiles anyway, so it would not
+  have survived the upload.
+
 ## [0.3.0] — 2026-08-01
 
 Forge is *the most efficient, portable runtime for neural networks*. Through
@@ -56,7 +142,8 @@ written it against the public API. All three could.
 `docs/` and the Pages site are untouched and still describe the 0.2.0 layout;
 `docs/src/council.html` will not run against a 0.3.0 bundle, because the council
 bindings are no longer in it. The site follows in a separate change, after this
-release reaches crates.io and the tools can depend on a published version.
+release reaches crates.io and the tools can depend on a published version. (It
+did, the same day — see Unreleased.)
 
 The four items deferred from 0.2.0 — GPU-side sampling, int8, kernel fusion,
 multi-sequence batching — are still deferred and still ranked in that order.

@@ -6,6 +6,7 @@ rust-version = "1.87"
 license = "AGPL-3.0-only"
 description = "A terminal model browser and run dashboard for the Forge runtime"
 repository = "https://github.com/Aisuko/forge"
+# A demonstration of the runtime, not a library to depend on.
 publish = false
 
 [[bin]]
@@ -13,7 +14,9 @@ name = "forge-top"
 path = "src/main.rs"
 
 [dependencies]
-forge-ml = { path = "../.." }
+# `path` is what the workspace resolves; `version` is what makes this a
+# publishable shape now that forge-ml 0.3.0 is on crates.io.
+forge-ml = { path = "../..", version = "0.3" }
 safetensors = "0.5"
 ratatui = "0.30"
 crossterm = "0.29"

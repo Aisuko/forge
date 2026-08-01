@@ -124,8 +124,8 @@ impl Tensor {
     }
 
     /// Copy the tensor contents to a host `Vec<f32>`. Sync facade: on wasm32
-    /// only CPU tensors can be read synchronously (roadmap v4, pitfall 14) —
-    /// use [`Tensor::to_vec_f32_async`] for WebGPU tensors there.
+    /// only CPU tensors can be read synchronously — use
+    /// [`Tensor::to_vec_f32_async`] for WebGPU tensors there.
     pub fn to_vec_f32(&self) -> Result<Vec<f32>> {
         if self.dtype != DType::F32 {
             return Err(ForgeError::Shape("to_vec_f32 on non-f32 tensor".into()));

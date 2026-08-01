@@ -1,23 +1,15 @@
 name: CI (manual)
 
-# The primary gate for this repo is local, not here: .githooks/pre-commit runs
-# `scripts/ci_local.sh fast` and .githooks/pre-push runs `full` — the whole
-# release test suite, on a machine with an NVIDIA RTX A5000 and the gitignored
-# 548 MB models/gpt2/ present. See CONTRIBUTING.md for the one-time install.
+# The gate for this repo is local: .githooks/pre-commit runs
+# `scripts/ci_local.sh fast`, pre-push runs `full` on a machine with an RTX
+# A5000 and models/gpt2/ present. See CONTRIBUTING.md.
 #
-# This workflow has no push or pull_request trigger — it only runs on manual
-# dispatch. It exists for the one case the local hooks cannot cover: a pull
-# request from a fork, where nobody's hooks ran on the code.
+# No push or pull_request trigger. This covers the one case the hooks cannot —
+# a fork PR, where nobody's hooks ran — and runs `fast`, because hosted runners
+# have no GPU and the weight-dependent suites would self-skip.
 #
-# It deliberately runs `fast`, not `full`. Hosted runners have no GPU, so every
-# WGPU test would execute against Mesa's software Vulkan driver, and without
-# models/gpt2/ the suites that check real GPT-2 numerics against HF
-# `transformers` self-skip. A green run here would therefore be weaker than it
-# looks, while costing minutes. The tests stay where they can actually prove
-# something: the maintainer's pre-push hook, on the merge.
-#
-# Invoking ci_local.sh rather than restating its stages in YAML is the point —
-# there is one definition of "green", and this cannot drift from it.
+# It invokes ci_local.sh rather than restating its stages, so the two cannot
+# drift.
 
 on:
   workflow_dispatch:
@@ -36,4 +28,14 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+
+      # ci_local.sh fast ends with the site build, which needs the CLI pinned
+      # to the wasm-bindgen in Cargo.lock.
+      - name: wasm-bindgen-cli
+        run: |
+          v=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
+          curl -sSfL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${v}/wasm-bindgen-${v}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin \
+              "wasm-bindgen-${v}-x86_64-unknown-linux-musl/wasm-bindgen"
+
       - run: ./scripts/ci_local.sh fast

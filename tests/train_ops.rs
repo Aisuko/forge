@@ -1,4 +1,4 @@
-//! Stage 8/9 op gates (roadmap v4): backward kernels and training modules
+//! Backward kernels and training modules
 //! match the CPU reference (<= 1e-3 abs), dropout masks are identical across
 //! backends, and AdamW matches a hand-computed step.
 

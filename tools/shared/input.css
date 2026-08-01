@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 /* Tailwind v4 has no tailwind.config.js — configuration lives here. Content
-   detection is automatic, but these are explicit so a build from a different
-   working directory cannot silently drop classes. */
+   detection is automatic; these are explicit so a build from a different
+   working directory cannot silently drop classes. One stylesheet serves all
+   three pages, so all three are scanned. */
+@source "../../docs/src";
 @source "../council/web";
 @source "../surprise/web";
 

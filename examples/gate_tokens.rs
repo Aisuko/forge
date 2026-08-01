@@ -1,7 +1,6 @@
-//! Stage 11 gate reference (roadmap v4): native WGPU greedy continuation as
-//! raw token ids, written to `tests/data/gate_expected.json` for the browser
-//! demo to compare against. Mirrors `WasmGpt2::greedy_ids` exactly (fixed
-//! length, no EOS early-stop).
+//! Native WGPU greedy continuation as raw token ids, written to
+//! `tests/data/gate_expected.json`. Mirrors `WasmGpt2::greedy_ids` exactly —
+//! fixed length, no EOS early-stop — so the browser can be compared against it.
 //!
 //! Defaults to the checkpoint in `assets/`, so the deployed demo's `?gate`
 //! mode could check the browser against native WGPU token-for-token.

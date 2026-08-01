@@ -92,6 +92,37 @@ you're running in a container with an NVIDIA GPU and `wgpu::Device`
 initialization fails to find a hardware adapter (falls back to software
 rendering via Mesa's llvmpipe otherwise, which works but is slow).
 
+### Vulkan in the devcontainer
+
+`scripts/setup_nvidia_vulkan.sh` fixes three separate causes of the same
+`Found no drivers!` message on driver 580.x with an RTX A5000. Each was
+diagnosed independently; any one of them alone produces that error, so fixing
+only the obvious one leaves the symptom unchanged.
+
+1. **DRM node permissions.** `wgpu` needs `/dev/dri/{card*,renderD*}` for the
+   NVIDIA GPU, openable under the container's device cgroup — the
+   `--device-cgroup-rule` entries for majors 226 and 195 are already in
+   `devcontainer.json`. But `--device=/dev/dri` bind-mounts the *host's* nodes
+   verbatim (`root:video` / `root:<host render gid>`, mode 660), and the
+   container user is in neither group, so every `open()` fails `EACCES` even
+   though the cgroup rule permits it. The script `chmod 666`s the
+   container-local nodes; the host's are untouched.
+2. **The Vulkan ICD manifest.** Without
+   `/usr/share/vulkan/icd.d/nvidia_icd.json` pointing at `libGLX_nvidia.so.0`,
+   the loader finds only Mesa's llvmpipe/lvp ICDs.
+3. **The GLVND EGL vendor manifest.** This is the one that is easy to miss:
+   only `50_mesa.json` exists, and `10_nvidia.json` pointing at
+   `libEGL_nvidia.so.0` has to be added. `libGLX_nvidia.so.0` is one library
+   behind the GLX, EGL and Vulkan entry points, and without the EGL manifest
+   its internal bring-up never completes. The loader then loads it
+   successfully and calls it, but `vk_icdNegotiateLoaderICDInterfaceVersion`
+   returns `VK_ERROR_INITIALIZATION_FAILED` (-3) with `vkCreateInstance` still
+   NULL — *before* the driver ever touches `/dev/nvidiactl` or the DRM nodes,
+   and identically as the container user or as root. So it is not a
+   permissions symptom, however much "Found no drivers!" reads like one.
+   Adding the manifest makes negotiate return 0 and `vkCreateInstance` resolve
+   immediately, which is the check the script ends with.
+
 ## The local CI gate
 
 Verification runs on your machine, in git hooks, rather than on GitHub. The
@@ -114,7 +145,7 @@ and both hooks are thin wrappers around it:
 
 | stage | checks | cost (warm `target/`) | hook |
 | --- | --- | --- | --- |
-| `fast` | `cargo fmt --check`, clippy on the crate and both tools, the two wasm32 bundles, the `forge-top` build, the TUI dependency assert | ~9s | `pre-commit` |
+| `fast` | `cargo fmt --check`, clippy on the crate and both tools, the two wasm32 bundles, the `forge-top` build, the TUI dependency assert, the site build | ~9s | `pre-commit` |
 | `full` | everything in `fast`, plus the release test suites for `forge-ml` and `forge-council` | ~1m10s | `pre-push` |
 
 Stages are ordered cheapest-first and stop at the first failure, so a
@@ -199,18 +230,40 @@ cargo run --release --example generate -- --backend cpu  --prompt "Hello Forge!"
 cargo run --release --example generate -- --backend wgpu --prompt "Hello Forge!"
 ```
 
-If you're touching the browser/wasm path, build a page that exercises it. Both
-require `rustup target add wasm32-unknown-unknown` and a `wasm-bindgen-cli`
-matching the `wasm-bindgen` crate version in `Cargo.lock`:
+If you're touching the browser/wasm path, build and run the pages. This needs
+`rustup target add wasm32-unknown-unknown` and a `wasm-bindgen-cli` matching
+the `wasm-bindgen` crate version in `Cargo.lock`.
+
+```bash
+make site          # build the whole site and serve it on :8080
+make site-verify   # build it, then drive all three pages on a real GPU
+```
+
+`scripts/build_site.sh` composes `docs/dist/` from the landing page in
+`docs/src/` and both tool pages in `tools/*/web/`, sharing one core wasm bundle
+and one copy of the 43 MB checkpoint. It is what `.github/workflows/pages.yml`
+deploys, and it runs in the `fast` gate, so a page that names a moved asset
+fails at commit time.
+
+`make site-verify` (`scripts/check_pages.py`) is the check that matters:
+`check_site.py` proves the artifact resolves, but a page that builds and then
+fails inside `WasmGpt2.load` looks identical over HTTP. It drives each page in
+headless Chromium with WebGPU — press Run, wait for output, assert on the DOM —
+and fails on any console error, page error or 4xx. It needs `pip install
+playwright && playwright install chromium`, and it is deliberately not in CI:
+hosted runners have no GPU, so every page would fail there for a reason no code
+change can fix.
+
+Each tool page also builds standalone, without the rest of the site:
 
 ```bash
 ./tools/surprise/build.sh   # drives WasmGpt2 — the runtime's own bundle
 ./tools/council/build.sh    # drives WasmCouncil — the council crate's cdylib
-python3 -m http.server -d tools/surprise/dist 8081
 ```
 
-Neither page is deployed. `make surprise` and `make council` do the build and
-the serve in one step.
+A standalone artifact links to pages it does not ship, which `check_site.py`
+reports as warnings; the composed site is built with `--strict`, where those
+would be errors.
 
 ## Making a change
 

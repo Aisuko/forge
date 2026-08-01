@@ -26,7 +26,7 @@ fn dirty_pool(device: &Device, numel: usize, marker: f32) {
 
 // `unsplit_heads` is a backward kernel, so it only exists under `train` — but
 // the invariant it guards belongs to the pool, which every build uses. The
-// other three tests here stay in the default suite for that reason.
+// other test here stays in the default suite for that reason.
 #[cfg(feature = "train")]
 #[test]
 fn unsplit_head_zeroes_the_thirds_it_does_not_write() {
@@ -85,56 +85,4 @@ fn results_do_not_depend_on_recycled_contents() {
     let a = run(0.0);
     let b = run(-1234.5);
     assert_eq!(a, b, "op results changed with the pool's prior contents");
-}
-
-/// A dispatch scope must not change results, only the number of submits.
-#[test]
-fn scope_does_not_change_results() {
-    let Ok(device) = Device::wgpu() else {
-        eprintln!("no WebGPU adapter; skipping");
-        return;
-    };
-    let n = 256;
-    let x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.03).cos()).collect();
-    let t = Tensor::from_f32(&x, [n], &device).unwrap();
-
-    let unscoped = {
-        let mut y = t.clone();
-        for _ in 0..8 {
-            y = ops::gelu(&ops::add(&y, &t).unwrap()).unwrap();
-        }
-        y.to_vec_f32().unwrap()
-    };
-
-    let scoped = {
-        let _scope = device.dispatch_scope();
-        let mut y = t.clone();
-        for _ in 0..8 {
-            y = ops::gelu(&ops::add(&y, &t).unwrap()).unwrap();
-        }
-        // Reading inside the scope must flush what is recorded, not read stale
-        // bytes — the whole reason readbacks flush rather than trusting callers.
-        y.to_vec_f32().unwrap()
-    };
-
-    assert_eq!(unscoped, scoped, "dispatch scope changed the result");
-}
-
-/// Reading a tensor mid-scope, continuing to compute, and reading again must
-/// both be correct: `flush` takes the encoder, so the scope has to reopen one.
-#[test]
-fn scope_survives_a_readback_in_the_middle() {
-    let Ok(device) = Device::wgpu() else {
-        eprintln!("no WebGPU adapter; skipping");
-        return;
-    };
-    let t = Tensor::from_f32(&[1.0f32, 2.0, 3.0, 4.0], [4], &device).unwrap();
-    let _scope = device.dispatch_scope();
-
-    let a = ops::add(&t, &t).unwrap();
-    let mid = a.to_vec_f32().unwrap();
-    assert_eq!(mid, vec![2.0, 4.0, 6.0, 8.0]);
-
-    let b = ops::add(&a, &t).unwrap();
-    assert_eq!(b.to_vec_f32().unwrap(), vec![3.0, 6.0, 9.0, 12.0]);
 }

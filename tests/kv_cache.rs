@@ -1,4 +1,4 @@
-//! Stage 7 gate (roadmap v4): KV-cache decode produces token-identical
+//! KV-cache decode produces token-identical
 //! greedy continuations to the no-cache path for >= 64 generated tokens,
 //! on both backends.
 //!

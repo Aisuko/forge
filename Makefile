@@ -3,14 +3,14 @@
 #   make            # this help
 #   make train      # train, score, and name a champion char model
 #   make check      # the same gate the pre-commit hook runs
-#   make council    # build the council page and serve it on :8080
+#   make site       # build the whole site and serve it on :8080
 #
 # Every target is a thin wrapper around a script in scripts/, which stays the
 # single source of truth. Nothing here reimplements a build step; if a recipe
 # needs more than one line, it belongs in a script instead.
 #
-# Knobs (override on the command line, e.g. `make council PORT=9000`):
-#   PORT      port for `make council` / `make surprise`       [8080]
+# Knobs (override on the command line, e.g. `make site PORT=9000`):
+#   PORT      port for `make site` / `council` / `surprise`   [8080]
 #   BACKEND   wgpu | cpu, passed to the trainer and scorer    [wgpu]
 #   CKPT      checkpoint promoted by `make ship`
 #   STEPS PATIENCE RUNS OUT   forwarded to scripts/train_char.sh
@@ -31,8 +31,8 @@ export RUNS
 export OUT
 
 .PHONY: help train train-quick train-baseline train-report ship \
-        council surprise top check check-full test test-parity fmt clippy \
-        data gpt2 hooks clean
+        site site-verify council surprise top check check-full test test-parity \
+        fmt clippy data gpt2 hooks clean
 
 help: ## Show this help
 	@printf '\033[1mForge\033[0m — make <target>\n\n'
@@ -62,13 +62,26 @@ ship: ## Promote a checkpoint into assets/ (CKPT=path/to.safetensors)
 	@printf '\nnow regenerate the browser gate fixture:\n'
 	@printf '  cargo run --release --example gate_tokens -- --model assets/shakespeare_char\n'
 
-# ── tools ────────────────────────────────────────────────────────────────────
+# ── the site ─────────────────────────────────────────────────────────────────
+# One artifact: the landing page plus both tool pages, sharing one wasm bundle
+# and one copy of the checkpoint. This is what Pages deploys.
 
-council: ## Build the council page and serve it on :$(PORT)
+site: ## Build the whole site and serve it on :$(PORT)
+	./scripts/build_site.sh
+	./scripts/serve_web.sh $(PORT)
+
+site-verify: ## Build the site and drive all three pages on a real GPU
+	./scripts/build_site.sh
+	python3 scripts/check_pages.py
+
+# ── tools ────────────────────────────────────────────────────────────────────
+# Each tool page also builds standalone, without the rest of the site.
+
+council: ## Build the council page alone and serve it on :$(PORT)
 	./tools/council/build.sh
 	python3 -m http.server -d tools/council/dist --bind 0.0.0.0 $(PORT)
 
-surprise: ## Build the Surprise page and serve it on :$(PORT)
+surprise: ## Build the Surprise page alone and serve it on :$(PORT)
 	./tools/surprise/build.sh
 	python3 -m http.server -d tools/surprise/dist --bind 0.0.0.0 $(PORT)
 
@@ -79,7 +92,7 @@ top: ## Run forge-top, the terminal model browser
 # scripts/ci_local.sh defines what "green" means; the git hooks call the same
 # two stages. `check` is pre-commit, `check-full` is pre-push.
 
-check: ## Fast gate: fmt, clippy, wasm + tool builds, dep assert (~9s)
+check: ## Fast gate: fmt, clippy, wasm + tool builds, dep assert, site (~10s)
 	./scripts/ci_local.sh fast
 
 check-full: ## Everything in check, plus the release test suite (~1m10s)
@@ -115,5 +128,5 @@ gpt2: ## Fetch GPT-2 weights (needed by gpt2_e2e and kv_cache)
 hooks: ## Install the pre-commit / pre-push hooks
 	./scripts/install_hooks.sh
 
-clean: ## Remove the built tool pages
-	rm -rf tools/council/dist tools/surprise/dist
+clean: ## Remove the built pages
+	rm -rf docs/dist tools/council/dist tools/surprise/dist

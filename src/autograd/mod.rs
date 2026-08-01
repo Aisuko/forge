@@ -1,4 +1,4 @@
-//! Tape-based reverse-mode autograd (roadmap v4, Stage 8).
+//! Tape-based reverse-mode autograd.
 //!
 //! Define-by-run: a training forward records one `Node` per op on the
 //! [`Tape`]; [`Tape::backward`] sweeps the nodes in reverse, composing each

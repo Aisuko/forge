@@ -1,5 +1,5 @@
 //! Per-op numerical parity: every WGSL kernel must match the CPU reference
-//! within 1e-4 absolute tolerance (roadmap acceptance criteria), including
+//! within 1e-4 absolute tolerance, including
 //! non-square and non-power-of-two shapes.
 
 use forge::ops::{self, MatmulSpec};

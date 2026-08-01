@@ -41,9 +41,11 @@ feature of `forge-ml` through 0.2.0; a separate crate says the same thing
 without asking the runtime to carry it.
 
 `src/wasm.rs` is this crate's own `cdylib`, so the page loads
-`./forge/forge_council.js` rather than the runtime's `forge.js`. wasm-bindgen
-collects its custom section from every linked rlib, so that one bundle carries
-`WasmCouncil` and the runtime's `WasmGpt2` both — and it is also why nothing
-here declares a second `#[wasm_bindgen(start)]`.
+`./forge-council/forge_council.js` rather than the runtime's `forge/forge.js` —
+two separate directories, because the composed site ships both bundles.
+wasm-bindgen collects its custom section from every linked rlib, so that one
+bundle carries `WasmCouncil` and the runtime's `WasmGpt2` both — and it is also
+why nothing here declares a second `#[wasm_bindgen(start)]`.
 
-Not published to crates.io: see [`../README.md`](../README.md).
+Not published to crates.io: see [`../README.md`](../README.md). The page is
+deployed as part of the site — `make site` builds all three together.

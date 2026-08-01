@@ -8,7 +8,7 @@
  * this file invents is the 2-D projection, and it says so on the panel.
  */
 
-import init, { WasmCouncil } from "./forge/forge_council.js";
+import init, { WasmCouncil } from "./forge-council/forge_council.js";
 
 const $ = (id) => document.getElementById(id);
 const SVGNS = "http://www.w3.org/2000/svg";

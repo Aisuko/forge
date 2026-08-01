@@ -304,7 +304,7 @@ pub fn merge_heads(x: &WgpuStorage, t: usize, c: usize, h: usize) -> WgpuStorage
     out
 }
 
-// ---- backward / training kernels (roadmap v4, Stages 8-9) ----
+// ---- backward / training kernels ----
 
 pub fn gelu_bwd(x: &WgpuStorage, dy: &WgpuStorage, n: usize) -> WgpuStorage {
     let out = alloc(&x.ctx, n);

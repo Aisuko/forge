@@ -1,6 +1,6 @@
-//! Stage 10 (roadmap v4): train a from-scratch GPT-2-style model on Tiny
-//! Shakespeare, with either the character-level vocabulary (nanoGPT's
-//! `shakespeare_char`, 65 tokens — the default) or the GPT-2 BPE vocabulary.
+//! Train a from-scratch GPT-2-style model on Tiny Shakespeare, with either
+//! the character-level vocabulary (nanoGPT's `shakespeare_char`, 65 tokens —
+//! the default) or the GPT-2 BPE vocabulary.
 //!
 //! Gates: char mode targets nanoGPT's published **val loss ≈ 1.48**; BPE mode
 //! keeps the original gate of smoothed loss falling from ~10.8 (= ln 50257,
@@ -72,8 +72,8 @@ struct Args {
 const FULL_CORPUS: &str = "data/tinyshakespeare.txt";
 
 /// Per-tokenizer defaults. The char run reproduces nanoGPT's
-/// `config/train_shakespeare_char.py`; the BPE run keeps the Stage 10 config
-/// this example shipped with.
+/// `config/train_shakespeare_char.py`; the BPE run keeps the config this
+/// example shipped with.
 fn defaults(tokenizer: &str) -> Args {
     let char_mode = tokenizer == "char";
     Args {

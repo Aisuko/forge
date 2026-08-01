@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Fast local CI gate: fmt, clippy, the wasm32 and forge-top builds, and the TUI
-# dependency-leak assert. About 6s with a warm target/.
+# Fast local CI gate: fmt, clippy, the builds, the dep-leak assert, the site.
+# About 7s with a warm target/. The release suite runs on pre-push instead — a
+# minute is too slow to pay on every WIP commit.
 #
-# The release test suite runs on pre-push instead (see .githooks/pre-push) —
-# it takes about a minute, too slow to pay on every WIP commit or --amend.
-#
-# Activated by scripts/install_hooks.sh, which points core.hooksPath here.
-# Bypass with `git commit --no-verify`.
+# Installed by scripts/install_hooks.sh. Bypass with `git commit --no-verify`.
 set -euo pipefail
 
 # This gate checks the working tree, not the staged snapshot, so a partially
