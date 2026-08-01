@@ -97,7 +97,10 @@ rendering via Mesa's llvmpipe otherwise, which works but is slow).
 Verification runs on your machine, in git hooks, rather than on GitHub. The
 only remaining workflow that runs automatically is the Pages deploy
 (`.github/workflows/pages.yml`); `.github/workflows/ci.yml` is dispatch-only,
-kept for pull requests from forks where nobody's hooks ran.
+kept for pull requests from forks where nobody's hooks ran, and it invokes
+`scripts/ci_local.sh fast` rather than restating the stages. The release
+workflow checks only what the local gate cannot: the tag matching the manifest,
+the docs.rs render, and the `cargo package` tarball.
 
 The reason is that the GitHub runners were verifying strictly less than a
 developer machine can. They have no GPU, so every WGPU test ran against Mesa's

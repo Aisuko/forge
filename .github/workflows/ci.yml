@@ -1,22 +1,23 @@
 name: CI (manual)
 
 # The primary gate for this repo is local, not here: .githooks/pre-commit runs
-# fmt/clippy/builds and .githooks/pre-push runs the full release test suite
-# before anything is pushed. See scripts/ci_local.sh, which both hooks and the
-# jobs below invoke, and CONTRIBUTING.md for the one-time install.
+# `scripts/ci_local.sh fast` and .githooks/pre-push runs `full` — the whole
+# release test suite, on a machine with an NVIDIA RTX A5000 and the gitignored
+# 548 MB models/gpt2/ present. See CONTRIBUTING.md for the one-time install.
 #
-# This workflow therefore has no push or pull_request trigger — it only runs on
-# manual dispatch. It is kept for the one case the local hooks cannot cover:
-# a pull request from a fork, where nobody's pre-push hook ran on the code.
+# This workflow has no push or pull_request trigger — it only runs on manual
+# dispatch. It exists for the one case the local hooks cannot cover: a pull
+# request from a fork, where nobody's hooks ran on the code.
 #
-# Scope note: GitHub-hosted runners have no NVIDIA GPU. The WGPU-backed tests
-# below therefore execute against Mesa's software Vulkan driver (lavapipe),
-# which exercises the real WGSL kernel path but not real GPU hardware. Runners
-# also lack the gitignored 548 MB models/gpt2/, so gpt2_e2e and kv_cache are
-# excluded here. Both gaps are covered by the pre-push hook on a machine with
-# an NVIDIA RTX A5000 and the weights present — the published CPU<->WGPU max
-# logit diff of 8.4e-5 and the Forge<->HF transformers diff of 1.75e-4 come
-# from there. See scripts/setup_nvidia_vulkan.sh.
+# It deliberately runs `fast`, not `full`. Hosted runners have no GPU, so every
+# WGPU test would execute against Mesa's software Vulkan driver, and without
+# models/gpt2/ the suites that check real GPT-2 numerics against HF
+# `transformers` self-skip. A green run here would therefore be weaker than it
+# looks, while costing minutes. The tests stay where they can actually prove
+# something: the maintainer's pre-push hook, on the merge.
+#
+# Invoking ci_local.sh rather than restating its stages in YAML is the point —
+# there is one definition of "green", and this cannot drift from it.
 
 on:
   workflow_dispatch:
@@ -25,93 +26,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: fmt + clippy
+  fast:
+    name: fmt + clippy + builds
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy -p forge-ml --all-targets --locked -- -D warnings
-      # `train` is off by default, so the pass above never sees autograd, optim
-      # or the backward kernels. Gated code that nobody lints stops being linted
-      # the day it is gated.
-      - run: cargo clippy -p forge-ml --all-targets --locked --features train -- -D warnings
-      - run: cargo clippy -p forge-council -p forge-top --all-targets --locked -- -D warnings
-
-  test-cpu:
-    name: tests (llvmpipe)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      # Software Vulkan ICD so the WGPU code path still runs without a GPU.
-      - name: Install software Vulkan driver
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
-
-      # tests/gpt2_e2e.rs and tests/kv_cache.rs need models/gpt2 (548 MB, and
-      # correctly gitignored), so they are excluded here and stay a local
-      # concern. tests/tokenizer.rs is included because it self-skips when the
-      # weights are absent.
-      - name: Test (weight-independent suites)
-        run: |
-          cargo test -p forge-ml --release --locked \
-            --test op_parity \
-            --test pool \
-            --test tokenizer \
-            --test char_model \
-            --test streaming
-
-      # The training suites need `--features train` on the invocation itself:
-      # cargo cannot select a target whose required-features are unmet — it
-      # errors rather than skipping when the target is named explicitly.
-      - name: Test (train)
-        run: |
-          cargo test -p forge-ml --release --locked --features train \
-            --test train_ops \
-            --test training \
-            --test autograd
-
-      - name: Test (council)
-        run: cargo test -p forge-council --release --locked
-
-  build-wasm:
-    name: build wasm32
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked --target wasm32-unknown-unknown -p forge-ml
-      - run: cargo build --release --locked --target wasm32-unknown-unknown -p forge-council
-
-  build-tui:
-    name: build forge-top
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked -p forge-top
-
-      # The TUI deps live in tools/forge-top's own manifest so they can never
-      # reach forge-ml's dependents. In sync with assert_no_tui_deps in
-      # scripts/ci_local.sh.
-      - name: Assert forge-ml pulls no TUI dependencies
-        run: |
-          for dep in ratatui crossterm sysinfo nvml-wrapper memmap2; do
-            n=$(cargo tree -e normal --locked -p forge-ml | grep -c "^.*[^a-z-]$dep v" || true)
-            if [ "$n" -ne 0 ]; then
-              echo "::error::$dep reached forge-ml's dependency tree"
-              exit 1
-            fi
-          done
+      - run: ./scripts/ci_local.sh fast

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The local CI gate. This script is the single source of truth for what
-# "green" means: the hooks in .githooks/ are thin wrappers around it, and
-# .github/workflows/ci.yml (manual dispatch only) runs the same stages.
+# "green" means: the hooks in .githooks/ are thin wrappers around it, and so is
+# .github/workflows/ci.yml (manual dispatch only, `fast` stage). Nothing
+# restates these stages anywhere else, so nothing can drift from them.
 #
 #   ./scripts/ci_local.sh fast   # fmt, clippy, the builds, dep-leak assert
 #   ./scripts/ci_local.sh full   # everything in fast, plus the release tests
