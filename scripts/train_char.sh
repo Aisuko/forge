@@ -305,12 +305,11 @@ else:
         "```bash",
         f"./scripts/ship_char_model.sh {path}",
         "cargo run --release --example gate_tokens -- --model assets/shakespeare_char",
-        "./scripts/build_site.sh",
         "```",
         "",
         "The second command matters: `tests/data/gate_expected.json` holds greedy",
-        "tokens from the *current* weights, and the deployed page checks itself",
-        "against them. New weights without a new fixture is a failing gate.",
+        "tokens from the *current* weights, and is the reference a browser run is",
+        "compared against. New weights without a new fixture is a stale fixture.",
     ]
 
 report.write_text("\n".join(lines) + "\n")

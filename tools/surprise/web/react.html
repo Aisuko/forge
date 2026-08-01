@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Forge — the model reads over your shoulder</title>
+    <meta
+      name="description"
+      content="Select any line of text and a language model running on your own GPU tints it by
+               how surprised it was. Not the model writing — the model reading, one forward pass
+               over your whole selection, with nothing sent anywhere."
+    />
+    <link rel="stylesheet" href="./assets/app.css" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <a
+      href="#stage"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded focus:bg-forge-600 focus:px-3 focus:py-2 focus:text-white"
+      >Skip to the text</a
+    >
+
+    <nav
+      class="sticky top-0 z-40 border-b border-ink-100 bg-white/85 backdrop-blur dark:border-ink-800 dark:bg-ink-950/85"
+    >
+      <div class="wrap flex h-14 items-center justify-between gap-4">
+        <a href="https://github.com/Aisuko/forge" rel="noopener" class="flex items-center gap-2 font-semibold tracking-tight">
+          <span aria-hidden="true" class="text-forge-500">▰</span> Forge
+        </a>
+        <ul class="hidden gap-5 text-sm text-ink-500 sm:flex dark:text-ink-300">
+          <li><a class="text-forge-600" href="./react.html">Surprise</a></li>
+        </ul>
+        <a class="btn-ghost text-sm" href="https://github.com/Aisuko/forge" rel="noopener"
+          >GitHub</a
+        >
+      </div>
+    </nav>
+
+    <main class="wrap py-8 sm:py-12">
+      <!-- Like the council page, this leads with the thing rather than with an
+           explanation of the thing. The prose is at the bottom for whoever
+           wants it after they have already seen the text change colour. -->
+      <header class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p class="chip">no button · reacts to selection · runs on your GPU</p>
+          <h1 class="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
+            The model is <span class="text-forge-600">reading</span>, not writing.
+          </h1>
+          <p class="mt-3 max-w-2xl text-ink-500 dark:text-ink-300">
+            Select any stretch of the text below. Every character is tinted by how
+            surprised the model was to find it there — one forward pass over your
+            whole selection, on your own GPU.
+          </p>
+        </div>
+        <p id="react-device" class="font-mono text-xs text-ink-500 dark:text-ink-300"></p>
+      </header>
+
+      <!-- ── legend ───────────────────────────────────────────────────── -->
+      <section class="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div class="flex items-center gap-3">
+          <span class="text-xs text-ink-500 dark:text-ink-300">expected</span>
+          <span id="react-scale" class="h-3 w-40 rounded-sm" aria-hidden="true"></span>
+          <span class="text-xs text-ink-500 dark:text-ink-300">surprising</span>
+        </div>
+        <!-- Fixed scale, labelled. Normalising per selection would make every
+             passage look equally surprising, which destroys the comparison the
+             page exists to make. -->
+        <p class="font-mono text-[11px] text-ink-500 dark:text-ink-300">
+          0 &ndash; 6 bits · fixed scale, not normalised per selection
+        </p>
+        <p id="react-stat" class="font-mono text-[11px] text-forge-600 dark:text-forge-300"></p>
+      </section>
+
+      <!-- ── the text ─────────────────────────────────────────────────── -->
+      <section id="stage" class="mt-6">
+        <div class="card">
+          <div
+            id="react-status"
+            class="mb-4 font-mono text-xs text-ink-500 dark:text-ink-300"
+            role="status"
+            aria-live="polite"
+          >
+            starting…
+          </div>
+          <div id="react-progress-wrap" class="mb-4 meter" hidden>
+            <span id="react-progress" class="meter-fill" style="width: 0%"></span>
+          </div>
+
+          <div
+            id="react-text"
+            class="whitespace-pre-wrap font-mono text-[13px] leading-7 sm:text-sm"
+          ></div>
+        </div>
+
+        <!-- A selection is a different question from the passage it came from:
+             the model sees only the selected characters, with none of the
+             context before them. Scoring it in place would overwrite the
+             passage and hide that; giving it its own panel makes the two
+             comparable. -->
+        <div id="react-selection-card" class="card mt-4" hidden>
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="panel-h text-sm">Your selection, read on its own</h2>
+            <p
+              id="react-selection-stat"
+              class="font-mono text-[11px] text-forge-600 dark:text-forge-300"
+            ></p>
+          </div>
+          <div
+            id="react-selection"
+            class="mt-3 whitespace-pre-wrap font-mono text-[13px] leading-7"
+          ></div>
+          <p
+            id="react-selection-note"
+            class="mt-3 text-xs text-ink-500 dark:text-ink-300"
+          ></p>
+        </div>
+
+        <!-- The reader's own text. Same engine, no special case. -->
+        <div class="card mt-4">
+          <label class="block">
+            <span class="block text-xs text-ink-500 dark:text-ink-300"
+              >or type your own — it is scored as you pause</span
+            >
+            <textarea
+              id="react-input"
+              rows="3"
+              spellcheck="false"
+              class="mt-2 w-full rounded border border-ink-200 bg-white px-3 py-2 font-mono text-sm dark:border-ink-700 dark:bg-ink-900"
+            >
+To be, or not to be: that is the question.</textarea
+            >
+          </label>
+          <p id="react-warn" class="mt-2 text-xs text-forge-700 dark:text-forge-300" hidden></p>
+        </div>
+      </section>
+
+      <!-- ── the readout ──────────────────────────────────────────────── -->
+      <section class="mt-4">
+        <div
+          id="react-readout"
+          class="card font-mono text-xs text-ink-500 dark:text-ink-300"
+          aria-live="polite"
+        >
+          Hover a character to see what the model expected instead.
+        </div>
+      </section>
+
+      <!-- ── the prose, after the thing ───────────────────────────────── -->
+      <section class="mt-12">
+        <div class="grid gap-4 sm:grid-cols-3">
+          <div class="card">
+            <h2 class="panel-h text-sm">What you are looking at</h2>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              Before each character, the model has read everything before it and
+              formed an opinion about what comes next. The tint is the
+              probability it gave the character that actually turned up, in bits:
+              0 means it was certain, 6 means it was as good as guessing.
+            </p>
+          </div>
+          <div class="card">
+            <h2 class="panel-h text-sm">Why it is fast</h2>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              Scoring text you already have is not generation. Every position is
+              predicted from the text to its left, and all of them can be done at
+              once — so a paragraph costs a single forward pass, not one step per
+              character. The model is loaded once, when the page opens.
+            </p>
+          </div>
+          <div class="card">
+            <h2 class="panel-h text-sm">Why it is a better demo</h2>
+            <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
+              Every other demo asks you to compose a prompt, which is work. This
+              one asks nothing: it reacts to reading. And a model that reacts to
+              a selection in a few milliseconds is a model that is genuinely on
+              your machine — there is no round trip that could be that fast.
+            </p>
+          </div>
+        </div>
+        <p class="mt-4 text-xs text-ink-500 dark:text-ink-300">
+          The model here is the 10.6 M-parameter character-level Shakespeare model
+          that ships in the Forge repository. It knows 65 characters and nothing else, so
+          it finds ordinary modern prose genuinely surprising — that is a real
+          result, not a bug.
+        </p>
+      </section>
+    </main>
+
+    <footer
+      class="wrap border-t border-ink-100 py-10 text-xs text-ink-500 dark:border-ink-800 dark:text-ink-300"
+    >
+      <a class="hover:text-forge-600" href="https://github.com/Aisuko/forge" rel="noopener">← the Forge runtime on GitHub</a>
+    </footer>
+
+    <script type="module" src="./react.js"></script>
+  </body>
+</html>

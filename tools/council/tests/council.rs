@@ -7,8 +7,8 @@
 //! 2. The router is a proper distribution, and `beta = 0` really does weight
 //!    every expert equally.
 
-use forge::models::council::DEFAULT_BETA;
-use forge::{Council, Device, Gpt2, Gpt2Config, Sampling};
+use forge::{Device, Gpt2, Gpt2Config, Sampling};
+use forge_council::{Council, DEFAULT_BETA};
 
 fn tiny_config() -> Gpt2Config {
     Gpt2Config {

@@ -4,6 +4,64 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-08-01
+
+Forge is *the most efficient, portable runtime for neural networks*. Through
+0.2.0 the crate was that plus whatever had been demonstrated with it. This
+release separates the two: `forge-ml` is the runtime, and everything built on it
+sits beside it in `tools/`, depending on it the way any other crate would.
+
+The test applied to each piece was whether a third-party crate could have
+written it against the public API. All three could.
+
+### Changed
+
+- **The council and `forge-top` are downstream crates in `tools/`, and the
+  `council` and `tui` features are gone.** **Breaking.** `forge::Council` is now
+  `forge_council::Council` (`cargo run -p forge-council --example
+  council_demo`), and `forge-top` is `cargo run -p forge-top`. The repository is
+  a cargo workspace; `forge-ml` is still the only package that publishes, and
+  each tool carries a path dependency with `publish = false` until 0.3.0 is on
+  crates.io.
+- The runtime primitives the tools stand on are unchanged and unconditional:
+  `Gpt2::hidden_step`, `logits_from_hidden`, `wte_host`, `surprisal_async`.
+
+### Added
+
+- **`Sampler` and `top_probs`** are public API. Drawing a token from logits and
+  ranking a distribution are runtime primitives, and `tools/council` needs both
+  from outside the crate. `Sampler` owns its RNG, so no caller has to name
+  `rand`'s types.
+- **`tools/`** — `council` (the four experts, their page, and the training
+  scripts), `forge-top` (the terminal dashboard), `surprise` (a page over
+  `WasmGpt2.surprisal`, no Rust of its own), and `shared` for the page furniture
+  the two web tools have in common.
+
+### Removed
+
+- **The `council` and `tui` features**, with the five TUI dependencies —
+  ratatui, crossterm, sysinfo, nvml-wrapper, memmap2. They were optional so they
+  could never reach a dependent's tree or a wasm bundle; living in
+  `tools/forge-top`'s own manifest is the same promise with no flag left to get
+  wrong.
+- **`WasmCouncil` from the runtime's wasm bundle.** `#[wasm_bindgen]` exports
+  are GC roots the linker cannot eliminate, so it now lives in the council
+  crate's own cdylib. `WasmGpt2.surprisal` stayed: it is marshalling over
+  `Gpt2::surprisal_async`, a scoring pass in the way `generate` is a decoding
+  one.
+- `assets/council/` moved to `tools/council/assets/`.
+
+### Not in this release
+
+`docs/` and the Pages site are untouched and still describe the 0.2.0 layout;
+`docs/src/council.html` will not run against a 0.3.0 bundle, because the council
+bindings are no longer in it. The site follows in a separate change, after this
+release reaches crates.io and the tools can depend on a published version.
+
+The four items deferred from 0.2.0 — GPU-side sampling, int8, kernel fusion,
+multi-sequence batching — are still deferred and still ranked in that order.
+This release was scoped to the architecture.
+
 ## [0.2.0] — 2026-07-31
 
 The inference release. v0.1.0 said "it runs anywhere"; this one is about how
@@ -130,5 +188,6 @@ no CUDA toolchain and no Python interpreter in the loop.
 CPU↔WGPU parity to a max logit difference of 8.4e-5, and Forge↔HuggingFace
 transformers to 1.75e-4, on GPT-2 124M weights on an NVIDIA RTX A5000.
 
+[0.3.0]: https://github.com/Aisuko/forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Aisuko/forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Aisuko/forge/releases/tag/v0.1.0

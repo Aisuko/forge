@@ -8,14 +8,16 @@
 //! fine-tuning needs more steps or a higher learning rate — so the disagreement
 //! rate is printed at the end and is the number that matters.
 //!
+//! Run from the repository root — the manifest and checkpoint paths below are
+//! relative to it, and `cargo run` keeps the invocation's working directory.
+//!
 //! ```bash
-//! ./scripts/train_council.sh
-//! cargo run --release --example council_demo -- --prompt "ROMEO:" --chars 200
+//! ./tools/council/scripts/train_council.sh
+//! cargo run --release -p forge-council --example council_demo -- --prompt "ROMEO:" --chars 200
 //! ```
 
-use forge::{
-    AnyTokenizer, CharTokenizer, Council, Device, Gpt2, Gpt2Config, Sampling, Tokenizer as _,
-};
+use forge::{AnyTokenizer, CharTokenizer, Device, Gpt2, Gpt2Config, Sampling, Tokenizer as _};
+use forge_council::{Council, DEFAULT_BETA};
 
 const MANIFEST: &str = "data/council/manifest.json";
 
@@ -40,9 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let show: usize = get("--show").map_or(24, |s| s.parse().expect("--show"));
     let temp: f32 = get("--temp").map_or(0.8, |s| s.parse().expect("--temp"));
     let seed: u64 = get("--seed").map_or(42, |s| s.parse().expect("--seed"));
-    let beta: f32 = get("--beta").map_or(forge::models::council::DEFAULT_BETA, |s| {
-        s.parse().expect("--beta")
-    });
+    let beta: f32 = get("--beta").map_or(DEFAULT_BETA, |s| s.parse().expect("--beta"));
     let greedy = args.iter().any(|a| a == "--greedy");
 
     let device = Device::wgpu()?;

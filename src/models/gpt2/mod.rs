@@ -1515,7 +1515,7 @@ fn emit_valid_prefix(bytes: &[u8], mut sent: usize, on_text: &mut impl FnMut(&st
 /// picks from it, but the picture is of the model.
 ///
 /// No GPU work: the logits were already read back for sampling.
-pub(crate) fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
+pub fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
     let n = n.min(logits.len());
     if n == 0 {
         return Vec::new();
@@ -1560,6 +1560,45 @@ pub(crate) fn sample(logits: &[f32], sampling: Sampling, rng: Option<&mut StdRng
             }
             indexed[0].0 as u32
         }
+    }
+}
+
+/// Draws tokens from a row of logits, carrying the sampling stream with it.
+///
+/// [`Gpt2::generate`] and friends sample internally; this is the same drawing
+/// logic for callers that own the loop themselves, and it owns its RNG so no
+/// caller has to name `rand`'s types.
+///
+/// ```no_run
+/// # use forge::{Sampler, Sampling};
+/// let mut s = Sampler::new(1337);
+/// let logits = vec![0.1f32, 2.0, 0.3];
+/// let id = s.pick(&logits, Sampling::TopK { k: 2, temperature: 0.8, seed: 0 });
+/// ```
+///
+/// `Sampling::TopK`'s own `seed` field is ignored here — the stream is this
+/// sampler's, seeded once at [`Sampler::new`], so successive picks continue it
+/// rather than restarting it.
+pub struct Sampler {
+    rng: StdRng,
+}
+
+impl Sampler {
+    pub fn new(seed: u64) -> Self {
+        Sampler {
+            rng: StdRng::seed_from_u64(seed),
+        }
+    }
+
+    /// One token id from `logits`. Deterministic under [`Sampling::Greedy`];
+    /// otherwise it advances this sampler's stream.
+    pub fn pick(&mut self, logits: &[f32], sampling: Sampling) -> u32 {
+        sample(logits, sampling, Some(&mut self.rng))
+    }
+
+    /// Restart the stream. Same contract as constructing a fresh sampler.
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = StdRng::seed_from_u64(seed);
     }
 }
 

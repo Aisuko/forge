@@ -3,8 +3,11 @@
 //! demo to compare against. Mirrors `WasmGpt2::greedy_ids` exactly (fixed
 //! length, no EOS early-stop).
 //!
-//! Defaults to the model the site actually ships, so opening the deployed
-//! demo with `?gate` checks the browser against native WGPU token-for-token.
+//! Defaults to the checkpoint in `assets/`, so the deployed demo's `?gate`
+//! mode could check the browser against native WGPU token-for-token.
+//! That page went with the website in 0.2.0; the fixture stays because it is
+//! still the reference for any browser run, and this example is still the only
+//! thing that regenerates it after new weights are shipped.
 //!
 //! ```bash
 //! cargo run --release --example gate_tokens -- [--model DIR] [--backend wgpu] \
