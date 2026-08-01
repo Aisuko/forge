@@ -1,0 +1,80 @@
+name: Deploy site to Pages
+
+# Publishes docs/dist/ — the landing page plus both tool pages — to
+# aisuko.github.io/forge. scripts/build_site.sh is the definition of the site;
+# this workflow does not restate a step of it.
+#
+# What it cannot prove is that the pages *run*: hosted runners have no GPU, so
+# navigator.gpu.requestAdapter() returns null and every page fails for a reason
+# no code change fixes. That gate is `make site-verify`, on the maintainer's
+# machine, before the push that triggers this.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - tools/**
+      - src/**
+      - shaders/**
+      - assets/**
+      - scripts/build_site.sh
+      - scripts/build_web.sh
+      - scripts/gen_kernels.py
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a superseded build has nothing to add.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # The CLI must match the wasm-bindgen crate exactly — a skew produces a
+      # bundle that throws on import, which no static check catches. Read from
+      # Cargo.lock, never typed here. Prebuilt: `cargo install` costs ~2 min.
+      - name: wasm-bindgen-cli
+        run: |
+          v=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
+          echo "wasm-bindgen $v"
+          curl -sSfL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${v}/wasm-bindgen-${v}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin \
+              "wasm-bindgen-${v}-x86_64-unknown-linux-musl/wasm-bindgen"
+          wasm-bindgen --version
+
+      - run: ./scripts/build_site.sh
+
+      # upload-pages-artifact v4+ excludes dotfiles. Nothing in docs/dist is
+      # one: the artifact deploy serves the tarball as-is and never runs
+      # Jekyll, so there is no .nojekyll to carry.
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

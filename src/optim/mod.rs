@@ -1,6 +1,6 @@
-//! Optimizers (roadmap v4, Stage 9): AdamW with decoupled weight decay and
-//! optional global gradient-norm clipping. Backend-agnostic — state lives on
-//! the same device as the parameters and updates run through `ops`.
+//! Optimizers: AdamW with decoupled weight decay and optional global
+//! gradient-norm clipping. Backend-agnostic — state lives on the same device
+//! as the parameters, and updates run through `ops`.
 
 use crate::error::{ForgeError, Result};
 use crate::ops;

@@ -290,7 +290,7 @@ impl Gpt2 {
     /// Load HF GPT-2 weights from in-memory .safetensors bytes — the primary
     /// form; on wasm the bytes arrive from an HTTP fetch. `wte` never touches
     /// the device un-chunked: it is uploaded row-chunked straight from the
-    /// file buffer (roadmap v4, pitfall 2).
+    /// file buffer.
     pub fn from_safetensors_bytes(
         bytes: &[u8],
         config: Gpt2Config,
@@ -483,8 +483,6 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
-        // One command buffer for the whole pass instead of one per kernel.
-        let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, 0)?;
         for block in &self.blocks {
@@ -522,10 +520,6 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
-        // As in `hidden`: one submit for the step, not one per kernel. The
-        // probe paths read tensors back mid-pass, which flushes and reopens —
-        // correct, and the reason drawing the attention costs what it does.
-        let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, pos)?;
         // The embedding is only worth a round trip when the detail stages are
@@ -590,9 +584,6 @@ impl Gpt2 {
     /// Full logits [t, vocab] — used by verification tests.
     /// The LM head is wte-tied: logits = h @ wte^T.
     pub fn forward(&self, ids: &[u32]) -> Result<Tensor> {
-        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
-        // same command buffer: one submit for the whole step.
-        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         ops::matmul_chunked_transb(&h, &self.emb.wte_chunks, 1.0)
     }
@@ -600,9 +591,6 @@ impl Gpt2 {
     /// Logits for the last position only, recomputing the full context
     /// (no cache) — the reference decode path used by verification tests.
     pub fn logits_last(&self, ids: &[u32]) -> Result<Vec<f32>> {
-        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
-        // same command buffer: one submit for the whole step.
-        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
@@ -611,20 +599,14 @@ impl Gpt2 {
     /// Last-position logits for `ids` continuing from `cache` (incremental
     /// decode: pass the full prompt once, then one token at a time).
     pub fn logits_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
-        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
-        // same command buffer: one submit for the whole step.
-        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
     }
 
     /// Async form of [`Gpt2::logits_step`] — identical math; the readback is
-    /// awaited so it works on wasm32 (roadmap v4, pitfall 14).
+    /// awaited so it works on wasm32.
     pub async fn logits_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
-        // Nests inside `hidden_cached`'s scope so the wte-tied head joins the
-        // same command buffer: one submit for the whole step.
-        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?
@@ -1123,8 +1105,7 @@ impl Gpt2 {
     #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     /// One training forward + backward on a single sequence: mean
     /// cross-entropy of `targets` given `input`, and gradients for every
-    /// parameter in `param_specs` order. Batching is achieved by
-    /// accumulating grads over calls (roadmap v4 batching policy).
+    /// parameter in `param_specs` order. Batch by accumulating grads over calls.
     pub fn loss_grads(
         &self,
         input: &[u32],
@@ -1203,7 +1184,7 @@ impl Gpt2 {
         }
         let xf = tape.layernorm(&x, &pvars[n_params - 2], &pvars[n_params - 1], eps)?;
         // Weight-tied LM head: wte gets gradient from here *and* from the
-        // embedding scatter (roadmap v4, pitfall 6).
+        // embedding scatter.
         let logits = tape.matmul(
             &xf,
             &pvars[0],

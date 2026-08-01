@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the Tiny Shakespeare corpus (~1.1 MB) for the Stage 10 training gate.
+# Fetch the Tiny Shakespeare corpus (~1.1 MB) — the training tests and examples.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p data

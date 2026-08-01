@@ -7,7 +7,7 @@ use crate::tensor::Tensor;
 /// y = x @ W + b, with W stored [in_features, out_features].
 ///
 /// This matches the HF GPT-2 "Conv1D" convention, so checkpoint weights load
-/// without transposition (see roadmap "Known Pitfalls").
+/// without transposition.
 pub struct Linear {
     pub w: Tensor,
     pub b: Option<Tensor>,
@@ -32,8 +32,7 @@ impl LayerNorm {
 }
 
 /// Token + positional embedding table. The token table is stored row-chunked
-/// so no single GPU binding exceeds the device limit (see roadmap pitfalls);
-/// on CPU it is a single chunk.
+/// so no single GPU binding exceeds the device limit; on CPU it is one chunk.
 pub struct Embedding {
     /// Row chunks of the [vocab, n_embd] token table.
     pub wte_chunks: Vec<Tensor>,

@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
-# Full local CI gate, run before anything leaves the machine: everything
-# pre-commit checks, plus `cargo test --release --locked` — the whole suite,
-# including gpt2_e2e and kv_cache against real GPU hardware and the HF golden
-# fixture.
+# Full local CI gate: everything pre-commit checks, plus the release test
+# suite — gpt2_e2e and kv_cache against real GPU hardware and the HF goldens,
+# which a GPU-less hosted runner cannot do.
 #
-# That is a superset of what .github/workflows/ci.yml used to verify: the
-# GitHub runners had no GPU (software Vulkan only) and skipped the suites
-# needing models/gpt2/, since the 548 MB of weights are correctly gitignored.
+# It re-runs the pre-commit checks on purpose: a push can carry commits made
+# with --no-verify, or fetched from another machine.
 #
-# `full` re-runs the pre-commit checks on purpose — a push can carry commits
-# made with --no-verify, or fetched from another machine.
-#
-# Activated by scripts/install_hooks.sh. Bypass with `git push --no-verify`.
+# Installed by scripts/install_hooks.sh. Bypass with `git push --no-verify`.
 set -euo pipefail
 
 # git feeds one "<local ref> <local sha> <remote ref> <remote sha>" line per

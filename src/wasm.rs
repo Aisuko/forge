@@ -1,6 +1,10 @@
-//! Browser bindings (Stage 11, roadmap v4): a wasm-bindgen facade over the
-//! async inference API. Inference only — training is out of browser scope
-//! for 1.0.
+//! Browser bindings: a wasm-bindgen facade over the async inference API.
+//! Inference only — training is out of browser scope for 1.0.
+//!
+//! Everything here marshals a runtime primitive, including
+//! [`WasmGpt2::surprisal`]: scoring text that already exists is as much a
+//! primitive as generating it. Anything that *composes* these into a
+//! demonstration is a tool, and lives in `tools/`.
 
 use wasm_bindgen::prelude::*;
 
@@ -426,8 +430,8 @@ impl WasmGpt2 {
             .collect()
     }
 
-    /// Greedy continuation as raw token ids — used by the Stage 11 gate to
-    /// compare browser output against native WGPU token-for-token.
+    /// Greedy continuation as raw token ids, so the browser's output can be
+    /// compared against native WGPU token for token.
     pub async fn greedy_ids(
         &self,
         prompt: &str,

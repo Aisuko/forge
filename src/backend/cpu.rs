@@ -215,7 +215,7 @@ pub fn merge_heads(x: &[f32], t: usize, c: usize, h: usize) -> Vec<f32> {
     out
 }
 
-// ---- backward / training primitives (roadmap v4, Stages 8-9) ----
+// ---- backward / training primitives ----
 
 /// d/dx of GELU (tanh approximation), applied to upstream dy.
 pub fn gelu_bwd(x: &[f32], dy: &[f32]) -> Vec<f32> {

@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/Aisuko/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Aisuko/forge/actions/workflows/ci.yml)
 [![Release](https://github.com/Aisuko/forge/actions/workflows/release.yml/badge.svg)](https://github.com/Aisuko/forge/actions/workflows/release.yml)
+[![Pages](https://github.com/Aisuko/forge/actions/workflows/pages.yml/badge.svg)](https://aisuko.github.io/forge/)
 [![crates.io](https://img.shields.io/crates/v/forge-ml.svg)](https://crates.io/crates/forge-ml)
 [![docs.rs](https://img.shields.io/docsrs/forge-ml)](https://docs.rs/forge-ml)
 [![MSRV](https://img.shields.io/badge/MSRV-1.87-blue.svg)](Cargo.toml)
@@ -17,12 +18,17 @@ Running a transformer usually means Python, a CUDA toolchain, and a dependency s
 
 ## Demo
 
-Two pages run the runtime in a browser tab on your own GPU, built from this
-repository and served locally — the deployed site still describes 0.2.0:
+**[aisuko.github.io/forge](https://aisuko.github.io/forge/)** — three pages that
+run the runtime in a browser tab on your own GPU, with no server in the loop:
+
+- **Watch it think** — one character at a time, showing the shortlist it chose from and the positions it attended to
+- **[The council](https://aisuko.github.io/forge/council.html)** — four small models merging their hidden states into one character
+- **[Surprise](https://aisuko.github.io/forge/react.html)** — select any text; the model tints it by how surprised it was to read it
+
+Or build and serve the whole site locally:
 
 ```bash
-make surprise   # select any text; the model tints it by how surprised it was
-make council    # four small models merging their hidden states, one character at a time
+make site
 ```
 
 
@@ -50,9 +56,8 @@ cargo run --release -p forge-top -- --path models/
 # A council of four small models, deciding one character together  (tools/council)
 cargo run --release -p forge-council --example council_demo -- --prompt "ROMEO:"
 
-# The two browser pages, built and served locally  (tools/)
-make surprise
-make council
+# The site — all three pages, built and served locally
+make site
 
 # Tests
 cargo test --release

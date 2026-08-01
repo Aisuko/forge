@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# The local CI gate. This script is the single source of truth for what
-# "green" means: the hooks in .githooks/ are thin wrappers around it, and so is
-# .github/workflows/ci.yml (manual dispatch only, `fast` stage). Nothing
-# restates these stages anywhere else, so nothing can drift from them.
+# The single definition of what "green" means here. The hooks in .githooks/
+# and .github/workflows/ci.yml are thin wrappers around it, so nothing can
+# drift from it.
 #
-#   ./scripts/ci_local.sh fast   # fmt, clippy, the builds, dep-leak assert
+#   ./scripts/ci_local.sh fast   # fmt, clippy, builds, dep assert, the site
 #   ./scripts/ci_local.sh full   # everything in fast, plus the release tests
 #
-# Every optional feature (`train`) and every tool in tools/ gets its own
-# explicit run. A feature nobody builds is a feature that rots.
+# `fast` runs on pre-commit (~7s warm), `full` on pre-push (~1m10s). Every
+# optional feature and every tool gets its own run: one nobody builds rots.
 #
-# `fast` runs on pre-commit (~6s with a warm target/), `full` on pre-push
-# (~1m10s). Bypass either with `git commit --no-verify` / `git push
-# --no-verify`.
-#
-# Stages are ordered cheapest-first and the script stops at the first failure,
-# so a formatting slip does not cost you a minute of GPU tests.
+# Cheapest first, stopping at the first failure, so a formatting slip does not
+# cost a minute of GPU tests.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -47,8 +42,8 @@ run() {
   printf '    %sok%s %s(%ss)%s\n' "$GREEN" "$OFF" "$DIM" "$((SECONDS - t0))" "$OFF"
 }
 
-# The TUI deps must never reach the library's dependents or the wasm build;
-# they live in tools/forge-top's own manifest for exactly that reason.
+# The TUI deps live in tools/forge-top's manifest so they can never reach a
+# dependent of the library, or the wasm build.
 assert_no_tui_deps() {
   local tree dep n
   tree=$(cargo tree -e normal --locked -p forge-ml) || return 1
@@ -65,27 +60,27 @@ printf '%sforge local CI — %s stage%s\n\n' "$BOLD" "$STAGE" "$OFF"
 
 run "cargo fmt --check"            cargo fmt --all --check
 run "cargo clippy -D warnings"     cargo clippy -p forge-ml --all-targets --locked -- -D warnings
-# `train` is off by default: autograd, optim, the nine backward kernels and four
-# test/example targets are invisible to the pass above. Code that stops being
-# linted the day it is feature-gated is worse off than code that was never
-# gated, so lint it explicitly.
+# `train` is off by default, so autograd, optim, the nine backward kernels and
+# four targets are invisible to the pass above. Lint them explicitly.
 run "clippy --features train"      cargo clippy -p forge-ml --all-targets --locked --features train -- -D warnings
 run "clippy tools"                 cargo clippy -p forge-council -p forge-top --all-targets --locked -- -D warnings
 run "build wasm32"                 cargo build --release --locked --target wasm32-unknown-unknown -p forge-ml
 run "build wasm32 (council)"       cargo build --release --locked --target wasm32-unknown-unknown -p forge-council
 run "build forge-top"              cargo build --release --locked -p forge-top
 run "no TUI deps in forge-ml"      assert_no_tui_deps
+# ~0.5s: both wasm crates are already built above, so this is wasm-bindgen,
+# Tailwind and the copies. It catches a page naming an asset that moved, which
+# nothing else here would see. Whether the pages *run* is `make site-verify`.
+run "build site"                   ./scripts/build_site.sh
 
 if [[ "$STAGE" == full ]]; then
-  # The weight-dependent suites (gpt2_e2e, kv_cache, the tokenizer's BPE cases)
-  # self-skip rather than fail when models/gpt2/ is absent, which would make a
-  # green run quietly weaker than it looks. Say so.
+  # gpt2_e2e, kv_cache and the BPE cases self-skip without models/gpt2/, which
+  # makes a green run quietly weaker than it looks. Say so.
   if [[ ! -f models/gpt2/model.safetensors ]]; then
     printf '%snote: models/gpt2/ missing — gpt2_e2e and kv_cache will self-skip%s\n' "$DIM" "$OFF"
     printf '%s      run ./scripts/download_gpt2.sh for full coverage%s\n' "$DIM" "$OFF"
   fi
-  # `train` adds autograd/training/train_ops, which cargo would otherwise skip
-  # on required-features.
+  # `train` adds autograd/training/train_ops; cargo skips them without it.
   run "cargo test --release"       cargo test -p forge-ml --release --locked --features train
   run "cargo test (tools)"         cargo test -p forge-council --release --locked
 fi

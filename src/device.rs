@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::backend::wgpu::{DispatchScope, WgpuContext};
+use crate::backend::wgpu::WgpuContext;
 use crate::error::Result;
 
 /// Where a tensor lives and where its ops execute.
@@ -20,26 +20,9 @@ impl Device {
         Ok(Device::Wgpu(WgpuContext::new()?))
     }
 
-    /// Async device creation — the primary form (roadmap v4, pitfall 14);
-    /// works on native and wasm32/browser.
+    /// Async device creation — the primary form; works on native and wasm32.
     pub async fn wgpu_async() -> Result<Device> {
         Ok(Device::Wgpu(WgpuContext::new_async().await?))
-    }
-
-    /// Batch every dispatch made while the returned guard is alive into one
-    /// command buffer and one submit. `None` on the CPU backend, which has no
-    /// queue to batch.
-    ///
-    /// Hold it for the span of a logical step — a decode step issues ~100
-    /// kernels, and a submit each leaves the GPU waiting on the CPU between
-    /// every one of them. Readbacks flush automatically, so a scope can wrap
-    /// code that reads results without special care.
-    #[must_use = "the batching ends when the guard drops"]
-    pub fn dispatch_scope(&self) -> Option<DispatchScope> {
-        match self {
-            Device::Cpu => None,
-            Device::Wgpu(ctx) => Some(ctx.scope()),
-        }
     }
 
     /// Human-readable adapter description.

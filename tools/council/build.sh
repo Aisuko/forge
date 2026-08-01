@@ -29,11 +29,10 @@ cp "$root/tools/shared/favicon.svg" "$DIST/"
 
 if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
-  cargo build --release --locked --target wasm32-unknown-unknown -p forge-council
-  wasm-bindgen --target web --out-dir "$DIST/forge" \
-      target/wasm32-unknown-unknown/release/forge_council.wasm
+  # forge-council/, not forge/: in the composed site forge/ is the core bundle.
+  ./scripts/build_web.sh "$DIST/forge-council" forge-council
 else
-  echo "warning: --no-wasm, so the page will 404 on ./forge/forge_council.js" >&2
+  echo "warning: --no-wasm, so the page will 404 on ./forge-council/forge_council.js" >&2
 fi
 
 if [[ -d "$here/assets" ]]; then
@@ -45,5 +44,9 @@ else
 fi
 
 echo
-python3 "$root/tools/shared/check_site.py" "$DIST"
+if [[ $WITH_WASM -eq 1 ]]; then
+  python3 "$root/tools/shared/check_site.py" "$DIST"
+else
+  echo "skipping check_site.py: --no-wasm leaves the module graph unresolvable" >&2
+fi
 echo "serve: python3 -m http.server -d $DIST 8080"

@@ -2,7 +2,7 @@
 //!
 //! [`Gpt2Tokenizer`] loads the original `vocab.json` + `merges.txt`. The split
 //! pattern uses a negative lookahead, which the standard `regex` crate cannot
-//! express, so `fancy-regex` is used (see roadmap "Known Pitfalls").
+//! express, so `fancy-regex` is used.
 //!
 //! The generation path in [`crate::Gpt2`] is generic over the [`Tokenizer`]
 //! trait, so [`CharTokenizer`] plugs into it unchanged.

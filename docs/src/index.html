@@ -497,12 +497,14 @@
           <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
             The wasm build is the library with a
             <code class="font-mono">wasm-bindgen</code> facade over the async
-            inference API — not a port. Native-only dependencies
+            inference API — not a port. The only native-only dependencies
             (<code class="font-mono">rayon</code>,
-            <code class="font-mono">pollster</code>, the
-            <code class="font-mono">forge-top</code> terminal UI) are behind
-            target and feature gates, which is why this page needs no
-            cross-origin isolation headers and ships as static files.
+            <code class="font-mono">pollster</code>) are behind target gates,
+            and the crate has no optional dependency at all: everything built
+            <em>with</em> the runtime, including the two pages linked above,
+            is a separate crate in
+            <code class="font-mono">tools/</code>. That is why this page needs
+            no cross-origin isolation headers and ships as static files.
           </p>
         </div>
       </section>
@@ -763,9 +765,13 @@ cargo run --release --example generate -- \
               <div class="scroll-x mt-3">
                 <pre id="cmd-tui" class="font-mono text-xs leading-relaxed"># forge-top: model browser + live dashboard
 # tokens/s, VRAM, GPU util, temperature, power
-cargo run --release --features tui \
-  --bin forge-top -- --path models/</pre>
+cargo run --release -p forge-top -- --path models/</pre>
               </div>
+              <p class="mt-3 text-sm text-ink-500 dark:text-ink-300">
+                A crate in <code class="font-mono">tools/</code>, not a feature
+                of the runtime — so nothing that draws a terminal can reach a
+                dependent's build.
+              </p>
             </div>
           </div>
         </div>

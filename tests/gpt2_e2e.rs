@@ -1,4 +1,4 @@
-//! End-to-end GPT-2 acceptance gates (roadmap v3, Stage 6):
+//! End-to-end GPT-2 acceptance gates:
 //!   - CPU vs WGPU last-position logits within 5e-3 abs
 //!   - greedy continuations identical on both backends
 //!   - (when tests/data/hf_golden.json exists) logits within 1e-2 abs of

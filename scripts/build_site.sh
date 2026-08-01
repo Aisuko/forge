@@ -1,94 +1,84 @@
 #!/usr/bin/env bash
-# Build the explainer site into docs/dist/.
+# Compose the site into docs/dist/: the landing page and both tool pages, as
+# one artifact. This is what .github/workflows/pages.yml deploys.
 #
-#   ./scripts/build_site.sh              # full build, including the wasm bundle
-#   ./scripts/build_site.sh --no-wasm    # skip wasm (fast; the demo will 404)
+#   ./scripts/build_site.sh              # full build, including both wasm bundles
+#   ./scripts/build_site.sh --no-wasm    # skip wasm; the pages will 404
+#   ./scripts/serve_web.sh               # then serve it
 #
-# Then:  python3 -m http.server -d docs/dist 8080
+# Each page's source stays where it is owned — docs/src/ for the landing page,
+# tools/*/web/ for the tools — and is copied here, never duplicated. The core
+# wasm bundle and the 43 MB checkpoint are built once and read by two pages;
+# assembling three self-contained dist/s instead would ship them twice.
 #
-# The wasm bundle is built from src/ every time rather than copied from a
-# committed artifact, so it cannot go stale. The same steps run in
-# .github/workflows/pages.yml. Everything is relative to the artifact root
-# because the site is served from /forge/, not /.
+# Everything is relative to the artifact root: the site is served from /forge/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAILWIND_VERSION="4.3.3"
 DIST="docs/dist"
 WITH_WASM=1
 case "${1:-}" in
   --no-wasm) WITH_WASM=0 ;;
-  # Accepted for compatibility; building the wasm is now the default.
-  --with-wasm|"") ;;
+  "") ;;
   *) echo "unknown flag ${1} (use --no-wasm)" >&2; exit 2 ;;
 esac
-
-# ── Tailwind standalone CLI: no Node, no package.json, matching a Rust repo.
-TW="${TAILWIND_BIN:-.cache/tailwindcss-${TAILWIND_VERSION}}"
-if [[ ! -x "$TW" ]]; then
-  mkdir -p "$(dirname "$TW")"
-  case "$(uname -s)-$(uname -m)" in
-    Linux-x86_64)  asset="tailwindcss-linux-x64" ;;
-    Linux-aarch64) asset="tailwindcss-linux-arm64" ;;
-    Darwin-arm64)  asset="tailwindcss-macos-arm64" ;;
-    Darwin-x86_64) asset="tailwindcss-macos-x64" ;;
-    *) echo "unsupported platform for the Tailwind standalone CLI" >&2; exit 1 ;;
-  esac
-  echo "downloading tailwindcss v${TAILWIND_VERSION} ($asset)"
-  # Pinned, never 'latest': an upstream release must not be able to break the site.
-  curl -sSfL -o "$TW" \
-    "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWIND_VERSION}/${asset}"
-  chmod +x "$TW"
-fi
 
 rm -rf "$DIST"
 mkdir -p "$DIST/assets"
 
 echo "== css"
-"$TW" -i docs/src/input.css -o "$DIST/assets/app.css" --minify
+# shellcheck source=../tools/shared/tailwind.sh
+source tools/shared/tailwind.sh
+"$TW" -i tools/shared/input.css -o "$DIST/assets/app.css" --minify
 
-echo "== html + js"
-cp docs/src/index.html docs/src/council.html docs/src/react.html docs/src/demo.js \
-   docs/src/attention.js docs/src/decision.js docs/src/council.js docs/src/react.js \
-   "$DIST/"
+echo "== pages"
+cp docs/src/index.html docs/src/demo.js docs/src/attention.js docs/src/decision.js "$DIST/"
+cp tools/council/web/council.html tools/council/web/council.js "$DIST/"
+cp tools/surprise/web/react.html tools/surprise/web/react.js "$DIST/"
+cp tools/shared/favicon.svg "$DIST/"
 cp -r docs/static/. "$DIST/"
 
-# The kernel inventory is generated from shaders/ so the page cannot drift
+# The kernel inventory is generated from shaders/, so the page cannot drift
 # from the actual kernel set.
 python3 scripts/gen_kernels.py "$DIST/index.html"
 
 if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
-  # Straight into dist/ — there is no committed copy to fall out of date.
-  ./scripts/build_web.sh "$DIST/forge"
+  ./scripts/build_web.sh "$DIST/forge" forge-ml
+  ./scripts/build_web.sh "$DIST/forge-council" forge-council
 else
-  echo "warning: --no-wasm, so the demo will 404 on ./forge/forge.js" >&2
+  echo "warning: --no-wasm, so every page will 404 on its bundle" >&2
 fi
 
-# Stage 11 gate fixture: the browser compares its own greedy tokens against
-# these native-WGPU ids when the page is opened with ?gate.
-if [[ -f tests/data/gate_expected.json ]]; then
-  cp tests/data/gate_expected.json "$DIST/gate_expected.json"
-fi
+echo "== weights"
+# The browser gate fixture: index.html?gate compares its own greedy tokens
+# against these native-WGPU ids.
+[[ -f tests/data/gate_expected.json ]] && cp tests/data/gate_expected.json "$DIST/"
 
-# The council page's four experts. Absent on a clone that has not run
-# scripts/train_council.sh — the page then says so rather than 404-ing silently.
-if [[ -d assets/council ]]; then
-  mkdir -p "$DIST/council"
-  cp assets/council/. "$DIST/council/" -r
-else
-  echo "warning: assets/council/ missing — build it with" >&2
-  echo "         ./scripts/train_council.sh && ./scripts/ship_council.sh" >&2
-fi
-
+# index.html and react.html share one copy of the char model.
 if [[ -d assets/shakespeare_char ]]; then
   mkdir -p "$DIST/model"
-  cp assets/shakespeare_char/. "$DIST/model/" -r
+  cp -r assets/shakespeare_char/. "$DIST/model/"
 else
   echo "warning: assets/shakespeare_char/ missing — train it with" >&2
-  echo "         cargo run --release --features train --example train_shakespeare -- --backend wgpu" >&2
+  echo "         cargo run --release --features train --example train_shakespeare" >&2
+fi
+
+if [[ -d tools/council/assets ]]; then
+  mkdir -p "$DIST/council"
+  cp -r tools/council/assets/. "$DIST/council/"
+else
+  echo "warning: tools/council/assets/ missing — build it with" >&2
+  echo "         ./tools/council/scripts/train_council.sh && ./tools/council/scripts/ship_council.sh" >&2
 fi
 
 echo
-python3 scripts/check_site.py "$DIST" || true
-echo "serve: python3 -m http.server -d $DIST 8080"
+if [[ $WITH_WASM -eq 1 ]]; then
+  # --strict: the deployed artifact ships all three pages, so a link between
+  # them that does not resolve is an error here, though it is only a warning
+  # for a standalone tool build.
+  python3 tools/shared/check_site.py "$DIST" --strict
+else
+  echo "skipping check_site.py: --no-wasm leaves the module graph unresolvable" >&2
+fi
+echo "serve: ./scripts/serve_web.sh"

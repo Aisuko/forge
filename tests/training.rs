@@ -1,4 +1,4 @@
-//! Stage 9/10 CI gates (roadmap v4): a scaled-down random-init model
+//! A scaled-down random-init model
 //! overfits a fixed sequence (loss drops sharply) on both backends, and
 //! checkpoints round-trip bit-identically.
 
