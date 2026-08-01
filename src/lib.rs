@@ -5,19 +5,14 @@
 //!
 //! # Optional features
 //!
-//! None is on by default, so `cargo add forge-ml` gets the runtime alone.
+//! One, off by default, so `cargo add forge-ml` gets the runtime alone.
 //!
-//! - **`council`** — [`Council`], several small GPT-2s run on one prompt in
-//!   parallel and merged in their own hidden space. Composition over the
-//!   runtime: no extra dependency, no extra kernel.
 //! - **`train`** — [`autograd`] and [`optim`], the backward kernels, and
 //!   `Gpt2::loss`/`loss_grads`. Off by default because Forge is an inference
 //!   runtime that also happens to train; `cargo add forge-ml` should not
 //!   compile a tape you never record. Construction and serialization
 //!   (`Gpt2::init_random`, `params`, `save_safetensors`) stay core — they are
 //!   not training, and the inference tests use them.
-//! - **`tui`** — the `forge-top` terminal model browser. Its dependencies are
-//!   optional so they never reach this library's dependents or the wasm build.
 
 // Nightly-only, and only ever set by docs.rs (see `[package.metadata.docs.rs]`),
 // so this is inert on stable. It is what puts the "Available on crate feature"
@@ -51,11 +46,9 @@ pub mod wasm;
 pub use device::Device;
 pub use dtype::DType;
 pub use error::{ForgeError, Result};
-#[cfg(feature = "council")]
-#[cfg_attr(docsrs, doc(cfg(feature = "council")))]
-pub use models::council::{Council, CouncilStep, ExpertStep};
 pub use models::gpt2::{
-    AttnStep, Gpt2, Gpt2Config, KvCache, LayerDetail, Sampling, StepTrace, Surprisal,
+    AttnStep, Gpt2, Gpt2Config, KvCache, LayerDetail, Sampler, Sampling, StepTrace, Surprisal,
+    top_probs,
 };
 pub use shape::Shape;
 pub use tensor::Tensor;

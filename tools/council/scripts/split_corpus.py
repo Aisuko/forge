@@ -7,7 +7,7 @@ casts without a single hand-written label, and each expert still gets ~279 KB
 of text. Each slice's name is read back out of the data: its two most talkative
 speakers.
 
-    ./scripts/split_corpus.py            # -> data/council/{0..3}.txt, manifest.json
+    ./tools/council/scripts/split_corpus.py   # -> data/council/{0..3}.txt, manifest.json
 """
 
 import json
@@ -16,7 +16,9 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# Three levels up: tools/council/scripts/ -> the repository root, where the
+# corpus and the data/ output directory live.
+ROOT = Path(__file__).resolve().parents[3]
 CORPUS = ROOT / "data" / "tinyshakespeare.txt"
 OUT = ROOT / "data" / "council"
 N_EXPERTS = 4

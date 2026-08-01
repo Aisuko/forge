@@ -1,0 +1,293 @@
+@import "tailwindcss";
+
+/* Tailwind v4 has no tailwind.config.js — configuration lives here. Content
+   detection is automatic, but these are explicit so a build from a different
+   working directory cannot silently drop classes. */
+@source "../council/web";
+@source "../surprise/web";
+
+@theme {
+  --color-forge-50: #fff4ed;
+  --color-forge-100: #ffe6d5;
+  --color-forge-300: #ffb185;
+  --color-forge-500: #ff8a4c;
+  --color-forge-600: #ea6a24;
+  --color-forge-700: #c14f18;
+
+  --color-ink-50: #f7f7f8;
+  --color-ink-100: #ebebee;
+  --color-ink-300: #b4b4bd;
+  --color-ink-500: #6b6b78;
+  --color-ink-700: #35353f;
+  --color-ink-800: #212128;
+  --color-ink-900: #16161b;
+  --color-ink-950: #0d0d11;
+
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* An accessibility requirement, not a nicety: honour the OS setting. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  body {
+    @apply bg-white text-ink-800 antialiased;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      @apply bg-ink-950 text-ink-100;
+    }
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-forge-600;
+  }
+}
+
+@layer components {
+  .wrap {
+    @apply mx-auto w-full max-w-5xl px-5;
+  }
+
+  .section {
+    @apply scroll-mt-20 border-t border-ink-100 py-16 dark:border-ink-800;
+  }
+
+  .h2 {
+    @apply text-2xl font-semibold tracking-tight sm:text-3xl;
+  }
+
+  .lede {
+    @apply mt-3 max-w-2xl text-ink-500 dark:text-ink-300;
+  }
+
+  /* min-w-0 is load-bearing: a grid item's automatic minimum size is its
+     min-content width, so a card holding a long <pre> widens its whole column
+     and the page scrolls sideways on a phone — even though the <pre> sits in
+     a .scroll-x box that was supposed to absorb it. */
+  .card {
+    @apply min-w-0 rounded-xl border border-ink-100 bg-ink-50/60 p-5
+           dark:border-ink-800 dark:bg-ink-900/60;
+  }
+
+  /* v4's @apply cannot reference another custom class, so the shared button
+     shape is repeated rather than composed. */
+  .btn,
+  .btn-primary,
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm
+           font-medium transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-forge-600 text-white hover:bg-forge-700;
+  }
+
+  .btn-ghost {
+    @apply border border-ink-100 hover:bg-ink-50
+           dark:border-ink-700 dark:hover:bg-ink-800;
+  }
+
+  .chip {
+    @apply inline-block rounded-md border border-ink-100 px-2 py-1
+           font-mono text-xs text-ink-500
+           dark:border-ink-800 dark:text-ink-300;
+  }
+
+  /* Wide content must scroll inside its own box; the page body must never
+     scroll horizontally. */
+  .scroll-x {
+    @apply overflow-x-auto;
+  }
+
+  /* ── the two panels ───────────────────────────────────────────────────
+     Shared furniture for "What it chose" and "Where it looked": a heading, the
+     sentence saying what the numbers are, and a generated line underneath. */
+  .panel-h {
+    @apply font-semibold;
+  }
+
+  .panel-sub {
+    @apply mt-1 text-xs text-ink-500 dark:text-ink-300;
+  }
+
+  .panel-note,
+  .panel-caption {
+    @apply mt-2 text-xs text-ink-500 dark:text-ink-300;
+  }
+
+  /* The caption runs to two lines on a narrow column and one on a wide one.
+     Reserved, because it is rewritten on every token and the panel below it
+     must not walk up and down the page while the model generates. */
+  .panel-caption {
+    @apply min-h-8;
+  }
+
+  /* ── what it chose ────────────────────────────────────────────────────── */
+
+  /* The text being continued. Right-aligned so the caret — the place the next
+     character lands — sits still while the text grows past it. */
+  .dec-context {
+    @apply mt-3 truncate text-right font-mono text-xs text-ink-500
+           dark:text-ink-300;
+  }
+
+  .dec-context::after {
+    content: "▌";
+    @apply text-forge-600;
+  }
+
+  /* Eight of these. Reserved height for all eight from the start: they arrive
+     together on the first trace, and a panel that suddenly grows 11rem drags
+     the rest of the section down the page mid-run. */
+  #dec-bars {
+    min-height: 11rem;
+  }
+
+  /* Fixed columns rather than flex, so the glyphs, the bars and the printed
+     probabilities each line up down the panel. */
+  .bar-row {
+    @apply grid items-center gap-2 py-0.5 font-mono text-xs;
+    grid-template-columns: 1.25rem 1fr 3rem 3.5rem;
+  }
+
+  .bar-glyph {
+    @apply text-center text-ink-800 dark:text-ink-100;
+  }
+
+  .bar-track {
+    @apply block h-3 overflow-hidden rounded-sm bg-ink-100 dark:bg-ink-800;
+  }
+
+  .bar-fill {
+    @apply block h-full rounded-sm bg-forge-500/70;
+  }
+
+  .bar-p {
+    @apply text-right text-ink-500 dark:text-ink-300;
+  }
+
+  .bar-mark {
+    @apply text-[10px] tracking-wide text-forge-600 dark:text-forge-300;
+  }
+
+  /* The sampled character. It is not always the top bar — temperature and top-k
+     reshape what the model samples from — and that difference is the most
+     interesting thing this panel shows, so it gets the solid fill. */
+  .bar-row.is-chosen .bar-fill {
+    @apply bg-forge-600;
+  }
+
+  .bar-row.is-chosen .bar-glyph {
+    @apply font-semibold text-forge-700 dark:text-forge-300;
+  }
+
+  /* ── where it looked ──────────────────────────────────────────────────── */
+
+  /* One column per key, 32 of them, each holding a bar and the character it
+     belongs to. A fixed window is what keeps the labels legible — the matrix
+     drops its axes above 40 positions and a normal run is 246. */
+  .strip {
+    @apply flex items-end gap-px;
+  }
+
+  .strip-col {
+    @apply flex min-w-0 flex-1 flex-col items-stretch;
+  }
+
+  .strip-track {
+    @apply relative block h-16 rounded-sm bg-ink-100/70 dark:bg-ink-800/70;
+  }
+
+  .strip-fill {
+    @apply absolute bottom-0 left-0 w-full rounded-sm bg-forge-500;
+  }
+
+  .strip-label {
+    @apply mt-1 overflow-hidden text-center font-mono text-[10px]
+           text-ink-500 dark:text-ink-300;
+  }
+
+  /* The query attending to itself — the right-hand end of every row, and the
+     only column whose position never changes. */
+  .strip-col.is-self .strip-label {
+    @apply text-forge-600 dark:text-forge-300;
+  }
+
+  /* ── the attention grid ───────────────────────────────────────────────
+     Square, because the matrix is: rows are queries, columns are keys, and
+     any other aspect ratio distorts the one relationship being shown. */
+  .heat-summary {
+    @apply cursor-pointer text-sm font-medium text-ink-500 select-none
+           hover:text-forge-600 dark:text-ink-300;
+  }
+
+  .heat-wrap {
+    @apply relative aspect-square w-full overflow-hidden rounded-2xl border
+           border-ink-100 bg-ink-50/70 dark:border-ink-800 dark:bg-ink-950;
+    max-height: 560px;
+  }
+
+  /* One line, always the same height whether or not the cursor is over a
+     cell — otherwise the diagram below it jumps on every hover. */
+  .heat-readout {
+    @apply mt-2 min-h-5 font-mono text-[11px] text-ink-500 dark:text-ink-300;
+  }
+
+  .head-pick {
+    @apply flex flex-wrap items-center gap-1;
+  }
+
+  .head-pick-label {
+    @apply mr-1 font-mono text-xs text-ink-500 dark:text-ink-300;
+  }
+
+  /* 36 of these, so they have to be small; the selected one has to be
+     unmistakable at that size, hence a filled swatch rather than a border. */
+  .pick {
+    @apply rounded border border-ink-100 px-2 py-1 font-mono text-xs
+           text-ink-500 transition-colors hover:bg-ink-50
+           dark:border-ink-700 dark:text-ink-300 dark:hover:bg-ink-800;
+  }
+
+  .pick.is-on {
+    @apply border-forge-600 bg-forge-600 text-white hover:bg-forge-700
+           dark:border-forge-600;
+  }
+
+  /* The cover over the empty grid: what it is waiting for, and
+     the button that starts it. Frosted rather than opaque, so the grid
+     underneath is visibly the thing about to fill in.
+
+     No z-index: it is the last positioned child of .heat-wrap, so it already
+     paints over the canvas — and raising it would put it over the run panel
+     in the next column, which is a sibling of the grid, not a child. */
+  .stage-idle {
+    @apply absolute inset-0 flex flex-col items-center justify-center
+           bg-ink-50/85 p-6 text-center backdrop-blur-[2px]
+           dark:bg-ink-950/85;
+  }
+
+  /* `display: flex` from the rule above beats [hidden]'s display:none, so
+     demo.js toggling the `hidden` property would do nothing without this —
+     the same trap the #demo-charset comment in index.html names. */
+  .stage-idle[hidden] {
+    display: none;
+  }
+}

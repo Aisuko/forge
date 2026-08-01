@@ -1,7 +1,7 @@
 //! `forge-top` — a terminal model browser and live run dashboard.
 //!
 //! ```bash
-//! cargo run --release --features tui --bin forge-top -- --path models/ --path checkpoints/
+//! cargo run --release -p forge-top -- --path models/ --path checkpoints/
 //! ```
 //!
 //! Three threads over one `mpsc` channel: **main** owns the terminal and

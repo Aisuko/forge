@@ -13,11 +13,10 @@
 //! the most weight, with `beta` setting how sharply. At `beta = 0` every expert
 //! counts equally; as `beta` grows the most confident expert takes over.
 
-use rand::SeedableRng;
-use rand::rngs::StdRng;
+use forge::{ForgeError, Gpt2, KvCache, Result, Sampler, Sampling, top_probs};
 
-use crate::error::{ForgeError, Result};
-use crate::models::gpt2::{Gpt2, KvCache, Sampling, sample, top_probs};
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 /// What one expert contributed to one character.
 #[derive(Debug, Clone)]
@@ -58,7 +57,7 @@ pub struct Council {
     pub beta: f32,
     models: Vec<Gpt2>,
     caches: Vec<KvCache>,
-    rng: StdRng,
+    sampler: Sampler,
 }
 
 impl Council {
@@ -100,7 +99,7 @@ impl Council {
             beta: DEFAULT_BETA,
             models,
             caches,
-            rng: StdRng::seed_from_u64(seed),
+            sampler: Sampler::new(seed),
         })
     }
 
@@ -127,7 +126,7 @@ impl Council {
             .iter()
             .map(|m| m.new_cache())
             .collect::<Result<Vec<_>>>()?;
-        self.rng = StdRng::seed_from_u64(seed);
+        self.sampler.reseed(seed);
         Ok(())
     }
 
@@ -228,11 +227,7 @@ impl Council {
                 hidden,
             })
             .collect();
-        let rng = match sampling {
-            Sampling::TopK { .. } => Some(&mut self.rng),
-            Sampling::Greedy => None,
-        };
-        let chosen = sample(&merged_logits, sampling, rng);
+        let chosen = self.sampler.pick(&merged_logits, sampling);
         let agreed = experts
             .iter()
             .filter(|e| e.top.first().map(|(id, _)| *id) == Some(chosen))

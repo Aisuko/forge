@@ -26,9 +26,10 @@ cp "$SRC" "$DEST/model.safetensors"
 cp "$dir/$stem.config.json" "$DEST/config.json"
 cp "$dir/$stem.vocab.json" "$DEST/vocab.json"
 
-# Measure what is being shipped, and record it beside the weights. The website
-# reads this to show the model's held-out loss, and build_site.sh copies the
-# whole directory into docs/dist/model/. Measured here rather than typed by
+# Measure what is being shipped, and record it beside the weights. Whatever
+# loads this checkpoint gets the held-out loss with it — including
+# tools/surprise/build.sh, which copies the whole directory into its dist/.
+# Measured here rather than typed by
 # anyone: a hard-coded quality figure is exactly what this file exists to
 # replace, and the previous shipped model's loss was recorded nowhere at all.
 TRAINER=target/release/examples/train_shakespeare

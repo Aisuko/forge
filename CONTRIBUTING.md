@@ -49,7 +49,7 @@ src/
   optim/              optimizer(s) (AdamW)
   tokenizer/          byte-level BPE (vocab.json + merges.txt)
   serialization/      safetensors checkpoint loading/saving
-  wasm.rs             wasm32 bindings for the browser demo (cfg-gated)
+  wasm.rs             wasm32 bindings — the browser is a runtime target
 
 shaders/              WGSL compute kernels, one file per op (matmul.wgsl,
                        layernorm.wgsl, gelu.wgsl, adamw.wgsl, ...) — each
@@ -59,7 +59,9 @@ tests/                integration tests; see "Testing" below
 examples/             runnable binaries (generate, train_shakespeare, ...) —
                        gitignored (local/generated), run via `cargo run --example`
 scripts/              setup/data-fetch/build helpers (see below)
-docs/                 roadmap + website source (built into docs/dist/)
+tools/                downstream of the runtime: crates and pages that depend
+                       on forge and add nothing to it — the council, forge-top,
+                       the Surprise page. See tools/README.md
 models/, data/,
 checkpoints/          local, gitignored — model weights, datasets, and
                        training checkpoints fetched/produced by scripts
@@ -109,8 +111,8 @@ and both hooks are thin wrappers around it:
 
 | stage | checks | cost (warm `target/`) | hook |
 | --- | --- | --- | --- |
-| `fast` | `cargo fmt --check`, `cargo clippy -D warnings`, wasm32 build, `forge-top` build, TUI dependency-leak assert | ~6s | `pre-commit` |
-| `full` | everything in `fast`, plus `cargo test --release --locked` (all suites) | ~1m10s | `pre-push` |
+| `fast` | `cargo fmt --check`, clippy on the crate and both tools, the two wasm32 bundles, the `forge-top` build, the TUI dependency assert | ~9s | `pre-commit` |
+| `full` | everything in `fast`, plus the release test suites for `forge-ml` and `forge-council` | ~1m10s | `pre-push` |
 
 Stages are ordered cheapest-first and stop at the first failure, so a
 formatting slip doesn't cost you a minute of GPU tests. Run either by hand:
@@ -194,13 +196,18 @@ cargo run --release --example generate -- --backend cpu  --prompt "Hello Forge!"
 cargo run --release --example generate -- --backend wgpu --prompt "Hello Forge!"
 ```
 
-If you're touching the browser/wasm path, build and serve the demo:
+If you're touching the browser/wasm path, build a page that exercises it. Both
+require `rustup target add wasm32-unknown-unknown` and a `wasm-bindgen-cli`
+matching the `wasm-bindgen` crate version in `Cargo.lock`:
 
 ```bash
-./scripts/build_site.sh  # requires rustup target add wasm32-unknown-unknown
-                         # and wasm-bindgen-cli matching the wasm-bindgen crate version
-./scripts/serve_web.sh   # serves the built site at http://localhost:8000/
+./tools/surprise/build.sh   # drives WasmGpt2 — the runtime's own bundle
+./tools/council/build.sh    # drives WasmCouncil — the council crate's cdylib
+python3 -m http.server -d tools/surprise/dist 8081
 ```
+
+Neither page is deployed. `make surprise` and `make council` do the build and
+the serve in one step.
 
 ## Making a change
 
@@ -211,3 +218,9 @@ If you're touching the browser/wasm path, build and serve the demo:
    and, if relevant, the manual CPU/WGPU generation comparison above.
 3. Keep changes scoped to what GPT-2 needs — this project deliberately
    avoids generality for its own sake.
+4. Ask where the change belongs. `src/` is the runtime: tensors, kernels,
+   GPT-2, tokenizers, serialization, the browser bindings. If a third-party
+   crate could have written your change against the public API, it is a tool
+   and belongs in `tools/` — and if writing it there needs a primitive the
+   runtime does not expose yet, expose the primitive rather than moving the
+   composition inward.

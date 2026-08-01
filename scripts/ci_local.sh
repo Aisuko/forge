@@ -6,8 +6,8 @@
 #   ./scripts/ci_local.sh fast   # fmt, clippy, the builds, dep-leak assert
 #   ./scripts/ci_local.sh full   # everything in fast, plus the release tests
 #
-# Every optional feature (`council`, `train`, `tui`) gets its own explicit run. A
-# feature nobody builds is a feature that rots.
+# Every optional feature (`train`) and every tool in tools/ gets its own
+# explicit run. A feature nobody builds is a feature that rots.
 #
 # `fast` runs on pre-commit (~6s with a warm target/), `full` on pre-push
 # (~1m10s). Bypass either with `git commit --no-verify` / `git push
@@ -47,14 +47,14 @@ run() {
 }
 
 # The TUI deps must never reach the library's dependents or the wasm build;
-# they are optional, behind the `tui` feature, for exactly that reason.
+# they live in tools/forge-top's own manifest for exactly that reason.
 assert_no_tui_deps() {
   local tree dep n
-  tree=$(cargo tree -e normal --locked) || return 1
+  tree=$(cargo tree -e normal --locked -p forge-ml) || return 1
   for dep in ratatui crossterm sysinfo nvml-wrapper memmap2; do
     n=$(grep -c "^.*[^a-z-]$dep v" <<<"$tree" || true)
     if [[ "$n" -ne 0 ]]; then
-      echo "$dep leaked into the default dependency tree" >&2
+      echo "$dep reached forge-ml's dependency tree" >&2
       return 1
     fi
   done
@@ -63,26 +63,17 @@ assert_no_tui_deps() {
 printf '%sforge local CI — %s stage%s\n\n' "$BOLD" "$STAGE" "$OFF"
 
 run "cargo fmt --check"            cargo fmt --all --check
-run "cargo clippy -D warnings"     cargo clippy --all-targets --locked -- -D warnings
-# `council` is off by default, so the pass above walks straight past
-# src/models/council.rs, its wasm bindings, its test and its example. Code that
-# stops being linted the day it is feature-gated is worse off than code that was
-# never gated, so lint it explicitly. `--features council` and not
-# `--all-features`: the latter would pull the five TUI deps into every lint pass,
-# and keeping them out of the default tree is what the check below is about.
-run "clippy --features council"    cargo clippy --all-targets --locked --features council -- -D warnings
-# Same argument for `train`: autograd, optim, the nine backward kernels and four
-# test/example targets are invisible to the pass above. No matching wasm build,
-# though — nothing on the site turns `train` on, and the default wasm build
-# below is what proves it compiles *out*.
-run "clippy --features train"      cargo clippy --all-targets --locked --features train -- -D warnings
-# Two wasm builds for two different claims: the default one proves the council
-# compiles *out* (what a dependent gets), the second that it compiles *in* (what
-# scripts/build_web.sh ships to the site).
-run "build wasm32"                 cargo build --release --locked --target wasm32-unknown-unknown
-run "build wasm32 (council)"       cargo build --release --locked --features council --target wasm32-unknown-unknown
-run "build forge-top (tui)"        cargo build --release --locked --features tui --bin forge-top
-run "no TUI deps in default tree"  assert_no_tui_deps
+run "cargo clippy -D warnings"     cargo clippy -p forge-ml --all-targets --locked -- -D warnings
+# `train` is off by default: autograd, optim, the nine backward kernels and four
+# test/example targets are invisible to the pass above. Code that stops being
+# linted the day it is feature-gated is worse off than code that was never
+# gated, so lint it explicitly.
+run "clippy --features train"      cargo clippy -p forge-ml --all-targets --locked --features train -- -D warnings
+run "clippy tools"                 cargo clippy -p forge-council -p forge-top --all-targets --locked -- -D warnings
+run "build wasm32"                 cargo build --release --locked --target wasm32-unknown-unknown -p forge-ml
+run "build wasm32 (council)"       cargo build --release --locked --target wasm32-unknown-unknown -p forge-council
+run "build forge-top"              cargo build --release --locked -p forge-top
+run "no TUI deps in forge-ml"      assert_no_tui_deps
 
 if [[ "$STAGE" == full ]]; then
   # The weight-dependent suites (gpt2_e2e, kv_cache, the tokenizer's BPE cases)
@@ -92,10 +83,10 @@ if [[ "$STAGE" == full ]]; then
     printf '%snote: models/gpt2/ missing — gpt2_e2e and kv_cache will self-skip%s\n' "$DIM" "$OFF"
     printf '%s      run ./scripts/download_gpt2.sh for full coverage%s\n' "$DIM" "$OFF"
   fi
-  # A superset of the default suite: `council` adds tests/council.rs and
-  # `train` adds autograd/training/train_ops, all of which cargo would
-  # otherwise skip on required-features.
-  run "cargo test --release"       cargo test --release --locked --features council,train
+  # `train` adds autograd/training/train_ops, which cargo would otherwise skip
+  # on required-features.
+  run "cargo test --release"       cargo test -p forge-ml --release --locked --features train
+  run "cargo test (tools)"         cargo test -p forge-council --release --locked
 fi
 
 printf '\n%s%s✓ all %s checks passed%s %s(%ss)%s\n' \

@@ -2,7 +2,7 @@
 # `forge` was taken on crates.io in 2017, so the crate publishes as `forge-ml`.
 # `[lib] name` below keeps the import path `use forge::...` for dependents.
 name = "forge-ml"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # 1.85 for edition 2024, but src/tensor.rs uses integer `is_multiple_of`, which
 # landed in 1.87 — clippy's incompatible_msrv lint holds this honest.
@@ -32,61 +32,27 @@ include = [
 name = "forge"
 crate-type = ["rlib", "cdylib"]
 
-# docs.rs builds with default features, and `council` is not one of them — without
-# this, `Council` would simply be absent from the published documentation. The
+[workspace]
+members = ["tools/council", "tools/forge-top"]
+
+# docs.rs builds with default features, and `train` is not one of them. The
 # `docsrs` cfg is what turns on the `doc(cfg(...))` feature badges in src/lib.rs.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-# The council: several small GPT-2s run on one prompt in parallel and merged in
-# their own hidden space. Pure composition over the runtime — it adds no
-# dependency and no WGSL kernel, so unlike `tui` this gates code rather than a
-# dependency tree. Off by default because it is research built *on* the runtime
-# rather than part of it; the runtime primitives it stands on
-# (`Gpt2::hidden_step`, `logits_from_hidden`, `wte_host`) are useful on their own
-# and stay unconditional.
-council = []
-
 # Training: autograd, AdamW, and the backward kernels. Off by default because
 # Forge is an inference runtime that also happens to train — a dependent doing
 # inference should not compile a tape it never records, and `src/wasm.rs`
 # exports no training at all, so in the browser bundle that code is provably
-# dead. Like `council` this gates code, not a dependency tree.
+# dead. This gates code, not a dependency tree.
 train = []
 
-# The `forge-top` TUI. Kept behind a feature so its deps never reach the wasm
-# build or the library's dependents — verify with
-# `cargo tree -e normal | grep -c ratatui` -> 0.
-tui = [
-    "dep:ratatui",
-    "dep:crossterm",
-    "dep:sysinfo",
-    "dep:nvml-wrapper",
-    "dep:memmap2",
-]
-
-[[bin]]
-name = "forge-top"
-path = "src/bin/forge-top/main.rs"
-required-features = ["tui"]
-
-# Declaring these does not turn off autodiscovery of the other examples and
-# tests — cargo merges explicit targets with discovered ones. `required-features`
-# makes cargo skip them under a default build instead of failing to compile
-# them, which is also what keeps `cargo package` green.
-[[example]]
-name = "council_demo"
-required-features = ["council"]
-
-[[test]]
-name = "council"
-required-features = ["council"]
-
-# The training targets. Same pattern as `council`: cargo skips them under a
-# default build instead of failing to compile them, which is what keeps
-# `cargo package --locked` green.
+# The training targets. Declaring these does not turn off autodiscovery of the
+# other examples and tests — cargo merges explicit targets with discovered ones.
+# `required-features` makes cargo skip them under a default build instead of
+# failing to compile them, which keeps `cargo package --locked` green.
 [[test]]
 name = "training"
 required-features = ["train"]
@@ -116,13 +82,6 @@ wgpu = "26"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4"
 rayon = "1"
-# `tui` feature only (see [features]); all optional so a default build and the
-# wasm build pull none of them.
-ratatui = { version = "0.30", optional = true }
-crossterm = { version = "0.29", optional = true }
-sysinfo = { version = "0.39", optional = true }
-nvml-wrapper = { version = "0.12", optional = true }
-memmap2 = { version = "0.9", optional = true }
 
 # Native only: the integration tests exercise the async inference API — the
 # path the browser actually takes — so they need a blocking executor.

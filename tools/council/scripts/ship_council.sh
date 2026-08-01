@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# Promote the trained council into assets/council/ — the tracked artifact the
-# council page loads.
+# Promote the trained council into tools/council/assets/ — the tracked artifact
+# the council page loads.
 #
-#   ./scripts/ship_council.sh [checkpoints/council]
+#   ./tools/council/scripts/ship_council.sh [checkpoints/council]
 #
 # Ships each expert's **best** checkpoint (best on its own quarter's held-out
 # text), one shared config.json and one shared vocab.json. There is deliberately
 # only one of each: the experts share a vocabulary and a shape, and shipping
 # four copies would let them drift apart silently.
+# Run from the repository root: the checkpoints and the corpus manifest live
+# there, and only the destination belongs to this tool.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../../.."
 
 SRC="${1:-checkpoints/council}"
-DEST="assets/council"
+DEST="tools/council/assets"
 MANIFEST="data/council/manifest.json"
 
-[[ -f "$MANIFEST" ]] || { echo "missing $MANIFEST — run ./scripts/split_corpus.py" >&2; exit 1; }
+[[ -f "$MANIFEST" ]] || { echo "missing $MANIFEST — run ./tools/council/scripts/split_corpus.py" >&2; exit 1; }
 N=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["n_experts"])' "$MANIFEST")
 
 for f in "$SRC/expert0.config.json" "$SRC/expert0.vocab.json"; do
-  [[ -f "$f" ]] || { echo "missing $f — run ./scripts/train_council.sh" >&2; exit 1; }
+  [[ -f "$f" ]] || { echo "missing $f — run ./tools/council/scripts/train_council.sh" >&2; exit 1; }
 done
 
 rm -rf "$DEST"
@@ -29,7 +31,7 @@ cp "$SRC/expert0.vocab.json" "$DEST/vocab.json"
 
 for ((k = 0; k < N; k++)); do
   best="$SRC/expert$k.best.safetensors"
-  [[ -f "$best" ]] || { echo "missing $best — run ./scripts/train_council.sh" >&2; exit 1; }
+  [[ -f "$best" ]] || { echo "missing $best — run ./tools/council/scripts/train_council.sh" >&2; exit 1; }
   cp "$best" "$DEST/expert$k.safetensors"
 done
 

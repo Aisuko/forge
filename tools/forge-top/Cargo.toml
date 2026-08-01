@@ -1,0 +1,22 @@
+[package]
+name = "forge-top"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.87"
+license = "AGPL-3.0-only"
+description = "A terminal model browser and run dashboard for the Forge runtime"
+repository = "https://github.com/Aisuko/forge"
+publish = false
+
+[[bin]]
+name = "forge-top"
+path = "src/main.rs"
+
+[dependencies]
+forge-ml = { path = "../.." }
+safetensors = "0.5"
+ratatui = "0.30"
+crossterm = "0.29"
+sysinfo = "0.39"
+nvml-wrapper = "0.12"
+memmap2 = "0.9"

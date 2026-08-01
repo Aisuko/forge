@@ -41,8 +41,9 @@ target/
 # Not Git LFS either — Pages serves LFS pointer files as text, which would
 # silently break the web demo.
 
-# Site build output and the downloaded Tailwind CLI.
-/docs/dist/
+# Tool page build output and the downloaded Tailwind CLI. Each tool in tools/
+# builds into its own dist/; none of it is committed or deployed.
+/tools/*/dist/
 /.cache/
 
 # Local planning notes, not for the public repo.

@@ -1,0 +1,25 @@
+[package]
+name = "forge-council"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.87"
+license = "AGPL-3.0-only"
+description = "Several small GPT-2s run in parallel and merged in hidden space, built on the Forge runtime"
+repository = "https://github.com/Aisuko/forge"
+publish = false
+
+[lib]
+name = "forge_council"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+forge-ml = { path = "../.." }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster = "0.4"
+serde_json = "1"

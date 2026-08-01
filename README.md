@@ -6,7 +6,6 @@
 [![docs.rs](https://img.shields.io/docsrs/forge-ml)](https://docs.rs/forge-ml)
 [![MSRV](https://img.shields.io/badge/MSRV-1.87-blue.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
-[![Live demo](https://img.shields.io/badge/demo-WebGPU-8A2BE2)](https://aisuko.github.io/forge/)
 
 ## What is it
 
@@ -18,7 +17,13 @@ Running a transformer usually means Python, a CUDA toolchain, and a dependency s
 
 ## Demo
 
-Try by using your own hardware at https://aisuko.github.io/forge/
+Two pages run the runtime in a browser tab on your own GPU, built from this
+repository and served locally — the deployed site still describes 0.2.0:
+
+```bash
+make surprise   # select any text; the model tints it by how surprised it was
+make council    # four small models merging their hidden states, one character at a time
+```
 
 
 https://github.com/user-attachments/assets/d3487d8f-40a1-4c84-9f98-d4a7c5ce1550
@@ -39,15 +44,15 @@ cargo run --release --example generate -- --backend wgpu --prompt "Hello Forge!"
 ./scripts/download_shakespeare.sh
 cargo run --release --example train_shakespeare -- --backend wgpu
 
-# Terminal model browser + run dashboard
-cargo run --release --features tui --bin forge-top -- --path models/
+# Terminal model browser + run dashboard  (tools/forge-top)
+cargo run --release -p forge-top -- --path models/
 
-# A council of four small models, deciding one character together
-./scripts/train_council.sh
-cargo run --release --features council --example council_demo -- --prompt "ROMEO:"
+# A council of four small models, deciding one character together  (tools/council)
+cargo run --release -p forge-council --example council_demo -- --prompt "ROMEO:"
 
-# Website + in-browser WebGPU demo
-./scripts/build_site.sh && ./scripts/serve_web.sh
+# The two browser pages, built and served locally  (tools/)
+make surprise
+make council
 
 # Tests
 cargo test --release
@@ -59,7 +64,7 @@ As a library:
 # The crate publishes as `forge-ml` (the name `forge` was taken on crates.io in
 # 2017); the library it builds is still `forge`, so imports read `use forge::…`.
 [dependencies]
-forge-ml = "0.2"
+forge-ml = "0.3"
 ```
 
 ```rust
@@ -74,20 +79,35 @@ let tok = AnyTokenizer::from_dir("assets/shakespeare_char")?;
 let text = model.generate(&tok, "ROMEO:", 40, Sampling::Greedy)?;
 ```
 
-## Optional features
+## The crate, and what is built on it
 
-The default build is the **inference** runtime — tensors, kernels, GPT-2,
-tokenizers, serialization. Three features sit outside it, all off by default:
+`forge-ml` is the runtime and nothing else: tensors, kernels, GPT-2, tokenizers,
+serialization, and the browser bindings. One optional feature, off by default:
 
 | Feature | What it adds | Why it's optional |
 | --- | --- | --- |
-| `council` | `Council` — several small GPT-2s run on one prompt in parallel, exchanging hidden states rather than text, merged by an entropy router. [Live page](https://aisuko.github.io/forge/council.html). | It is composition *over* the runtime: no extra dependency, no extra kernel, nothing a caller couldn't write against the public API. The primitives it stands on — `Gpt2::hidden_step`, `logits_from_hidden`, `wte_host` — are core and always available. |
 | `train` | reverse-mode autograd, AdamW, the nine backward kernels, and `Gpt2::loss` / `loss_grads`. Needed by `examples/train_shakespeare.rs` and `make train`. | Forge is an inference runtime that also happens to train. `cargo add forge-ml` should not compile a tape you never record, and `src/wasm.rs` exports no training at all. Construction and serialization — `Gpt2::init_random`, `params`, `save_safetensors` — are *not* gated: they are not training, and the inference tests use them. |
-| `tui` | the `forge-top` terminal model browser and run dashboard | It pulls five dependencies that have no business reaching a library's dependents or a wasm bundle. |
 
 ```toml
-forge-ml = { version = "0.2", features = ["train"] }
+forge-ml = { version = "0.3", features = ["train"] }
 ```
+
+Everything else lives in [`tools/`](tools), downstream of the runtime — a crate
+or a page that depends on `forge` and adds no kernel, no dtype and no device
+work of its own:
+
+| Tool | What it is |
+| --- | --- |
+| [`tools/council`](tools/council) | Four small GPT-2s run in parallel and merged in hidden space by an entropy router, plus the page that draws the vectors they exchange |
+| [`tools/forge-top`](tools/forge-top) | A terminal model browser and run dashboard |
+| [`tools/surprise`](tools/surprise) | A page that tints text by how surprised the model was to read it |
+
+Through 0.1.0 the first two were `council` and `tui` features of this crate.
+They are separate crates from 0.3.0 because the test of what belongs in the
+runtime is whether a third-party crate could have written it against the public
+API — and all three could. The primitives they stand on stayed:
+`Gpt2::hidden_step`, `logits_from_hidden`, `wte_host`, `surprisal_async`,
+`Sampler`, `top_probs`.
 
 ```bash
 cargo run --release --features train --example train_shakespeare -- --backend wgpu
