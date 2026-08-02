@@ -483,6 +483,8 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
+        // One command buffer for the whole pass instead of one per kernel.
+        let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, 0)?;
         for block in &self.blocks {
@@ -520,6 +522,10 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
+        // As in `hidden`: one submit for the step, not one per kernel. The
+        // probe paths read tensors back mid-pass, which flushes and reopens —
+        // correct, and the reason drawing the attention costs what it does.
+        let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, pos)?;
         // The embedding is only worth a round trip when the detail stages are
@@ -584,6 +590,9 @@ impl Gpt2 {
     /// Full logits [t, vocab] — used by verification tests.
     /// The LM head is wte-tied: logits = h @ wte^T.
     pub fn forward(&self, ids: &[u32]) -> Result<Tensor> {
+        // Nests inside `hidden`'s scope so the wte-tied head joins the same
+        // command buffer: one submit for the whole step.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         ops::matmul_chunked_transb(&h, &self.emb.wte_chunks, 1.0)
     }
@@ -591,6 +600,8 @@ impl Gpt2 {
     /// Logits for the last position only, recomputing the full context
     /// (no cache) — the reference decode path used by verification tests.
     pub fn logits_last(&self, ids: &[u32]) -> Result<Vec<f32>> {
+        // As in `forward`: the head joins the body's command buffer.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
@@ -599,6 +610,8 @@ impl Gpt2 {
     /// Last-position logits for `ids` continuing from `cache` (incremental
     /// decode: pass the full prompt once, then one token at a time).
     pub fn logits_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
+        // As in `forward`: the head joins the body's command buffer.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
@@ -607,6 +620,8 @@ impl Gpt2 {
     /// Async form of [`Gpt2::logits_step`] — identical math; the readback is
     /// awaited so it works on wasm32.
     pub async fn logits_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
+        // As in `forward`: the head joins the body's command buffer.
+        let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?

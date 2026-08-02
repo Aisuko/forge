@@ -69,7 +69,7 @@ As a library:
 # The crate publishes as `forge-ml` (the name `forge` was taken on crates.io in
 # 2017); the library it builds is still `forge`, so imports read `use forge::…`.
 [dependencies]
-forge-ml = "0.3"
+forge-ml = "0.4"
 ```
 
 ```rust
@@ -94,7 +94,7 @@ serialization, and the browser bindings. One optional feature, off by default:
 | `train` | reverse-mode autograd, AdamW, the nine backward kernels, and `Gpt2::loss` / `loss_grads`. Needed by `examples/train_shakespeare.rs` and `make train`. | Forge is an inference runtime that also happens to train. `cargo add forge-ml` should not compile a tape you never record, and `src/wasm.rs` exports no training at all. Construction and serialization — `Gpt2::init_random`, `params`, `save_safetensors` — are *not* gated: they are not training, and the inference tests use them. |
 
 ```toml
-forge-ml = { version = "0.3", features = ["train"] }
+forge-ml = { version = "0.4", features = ["train"] }
 ```
 
 Everything else lives in [`tools/`](tools), downstream of the runtime — a crate

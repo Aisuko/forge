@@ -2,7 +2,7 @@
 # `forge` was taken on crates.io in 2017, so the crate publishes as `forge-ml`.
 # `[lib] name` below keeps the import path `use forge::...` for dependents.
 name = "forge-ml"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 # 1.85 for edition 2024, but src/tensor.rs uses integer `is_multiple_of`, which
 # landed in 1.87 — clippy's incompatible_msrv lint holds this honest.

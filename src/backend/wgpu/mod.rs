@@ -11,6 +11,7 @@ use wgpu::util::DeviceExt;
 use crate::error::{ForgeError, Result};
 
 pub mod ops;
+mod serial;
 
 /// Storage-buffer offsets must respect this alignment when creating views.
 pub const OFFSET_ALIGN_BYTES: usize = 256;
@@ -195,6 +196,48 @@ impl Drop for PooledBuffer {
     }
 }
 
+/// An open recording scope: every dispatch made while one is alive goes into a
+/// single command encoder and a single `queue.submit`.
+///
+/// The reason this type exists: a GPT-2 block issues ~16 kernels, and one
+/// submit each leaves the GPU idle between them waiting on the CPU. See
+/// [`WgpuContext::scope`].
+pub struct DispatchScope {
+    ctx: Arc<WgpuContext>,
+}
+
+impl Drop for DispatchScope {
+    fn drop(&mut self) {
+        let outermost = {
+            let mut s = self.ctx.scope.lock().unwrap();
+            s.depth -= 1;
+            s.depth == 0
+        };
+        if outermost {
+            self.ctx.flush();
+        }
+    }
+}
+
+#[derive(Default)]
+struct ScopeState {
+    encoder: Option<wgpu::CommandEncoder>,
+    /// One compute pass for the whole scope, rather than one per dispatch.
+    ///
+    /// A pass boundary is a pipeline barrier and, on some drivers, a cache
+    /// flush; ~100 of them per decoded token is real time. `forget_lifetime`
+    /// is what lets the pass and the encoder it borrows live in the same
+    /// struct — it is a safe wgpu API that turns the borrow into a runtime
+    /// check, and the check is upheld here by ending the pass (dropping it)
+    /// before the encoder is touched for anything else.
+    ///
+    /// Ordering within a pass is still guaranteed: dispatches execute in the
+    /// order recorded, and wgpu inserts the barriers a read-after-write
+    /// between them needs.
+    pass: Option<wgpu::ComputePass<'static>>,
+    depth: usize,
+}
+
 /// A compiled kernel: the pipeline, and the bind-group layout `dispatch` needs
 /// for every bind group it builds.
 ///
@@ -211,6 +254,7 @@ pub struct WgpuContext {
     pipelines: Mutex<HashMap<&'static str, Kernel>>,
     counters: Counters,
     pool: Mutex<Pool>,
+    scope: Mutex<ScopeState>,
 }
 
 impl std::fmt::Debug for WgpuContext {
@@ -221,6 +265,9 @@ impl std::fmt::Debug for WgpuContext {
 
 impl WgpuContext {
     /// Sync device creation — native only. On wasm use [`Self::new_async`].
+    ///
+    /// A facade over [`Self::new_async`], holding no lock of its own: one gate
+    /// covers both, so a thread here and a thread there cannot race.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Result<Arc<Self>> {
         pollster::block_on(Self::new_async())
@@ -228,7 +275,22 @@ impl WgpuContext {
 
     /// Async device creation, on native and wasm32. This is the primary form;
     /// the sync API is a facade over it.
+    ///
+    /// Serialized against every other creator in the process: building two
+    /// adapters and devices at once wedges in the driver, with no dispatch or
+    /// compute involved, and that is what hung `tests/pool.rs` for minutes.
+    /// The gate is async (`serial::Gate`) because a `std::sync` guard held
+    /// across the `.await` below would make this future `!Send` and break
+    /// dependents that spawn it.
     pub async fn new_async() -> Result<Arc<Self>> {
+        static CREATE: serial::Gate = serial::Gate::new();
+        let _serial = CREATE.lock().await;
+        Self::create().await
+    }
+
+    /// Creation itself, without the gate. Every caller comes through
+    /// `new_async`, which is where the serialization lives.
+    async fn create() -> Result<Arc<Self>> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -255,18 +317,62 @@ impl WgpuContext {
             pipelines: Mutex::new(HashMap::new()),
             counters: Counters::default(),
             pool: Mutex::new(Pool::default()),
+            scope: Mutex::new(ScopeState::default()),
         }))
     }
 
-    /// Submit these buffer-to-buffer copies in one command buffer.
+    /// Open a recording scope: every [`WgpuContext::dispatch`] made while the
+    /// returned guard is alive is recorded into one command encoder and
+    /// submitted once, when the outermost guard drops.
     ///
-    /// Readback is why this exists: N staging copies in one command buffer cost
-    /// one submit and one fence wait, rather than one of each per region.
+    /// This is the difference between ~100 submits per decoded token and one.
+    /// Scopes nest — only the outermost submits — so a caller can wrap a whole
+    /// decode step without knowing whether its callees also wrap their bodies.
+    ///
+    /// Reads are safe across a scope: any readback flushes first (see
+    /// [`WgpuContext::flush`]), and compute passes within one encoder execute
+    /// in the order they were recorded.
+    pub fn scope(self: &Arc<Self>) -> DispatchScope {
+        let mut s = self.scope.lock().unwrap();
+        s.depth += 1;
+        DispatchScope { ctx: self.clone() }
+    }
+
+    /// Submit whatever a scope has recorded so far, without closing it.
+    ///
+    /// Every readback path calls this first. Making it the readback's job
+    /// rather than the caller's is deliberate: "remember to flush before you
+    /// read" is exactly the kind of rule that silently rots into a
+    /// stale-bytes bug, and the cost is one uncontended mutex on a path that
+    /// is about to wait on a fence anyway.
+    pub fn flush(&self) {
+        let encoder = {
+            let mut s = self.scope.lock().unwrap();
+            s.pass = None; // ends the pass; the encoder is locked while one lives
+            s.encoder.take()
+        };
+        if let Some(encoder) = encoder {
+            self.submit(encoder);
+        }
+    }
+
+    /// Submit everything a scope has recorded *plus* these buffer-to-buffer
+    /// copies, in one command buffer.
+    ///
+    /// Readback is why this exists. Flushing the compute and then submitting
+    /// the staging copy separately costs two submits and two trips through the
+    /// driver for what is logically one step; folding the copy into the same
+    /// command buffer makes a decode step one submit and one fence wait.
     ///
     /// Each copy is `(src, src_offset_bytes, dst, size_bytes)`, written to
     /// offset 0 of `dst`.
     fn submit_with_copies(&self, copies: &[(&wgpu::Buffer, u64, &wgpu::Buffer, u64)]) {
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = {
+            let mut s = self.scope.lock().unwrap();
+            s.pass = None;
+            s.encoder.take()
+        }
+        .unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
         for (src, src_off, dst, size) in copies {
             encoder.copy_buffer_to_buffer(src, *src_off, dst, 0, *size);
         }
@@ -419,6 +525,10 @@ impl WgpuContext {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Whatever a scope has recorded must reach the GPU ahead of this copy,
+        // or the read returns stale bytes. Going through `submit_with_copies`
+        // rather than `flush` then a second submit keeps a decode step at one
+        // submit and one fence wait.
         self.submit_with_copies(&[(buf, offset_bytes as u64, &staging, size_bytes as u64)]);
         staging
     }
@@ -501,8 +611,8 @@ impl WgpuContext {
                 })
             })
             .collect();
-        // See `stage_copy`: every one of these copies goes out in one command
-        // buffer, so N regions still cost one round trip.
+        // See `stage_copy`: pending scope work and every one of these copies go
+        // out in one command buffer, so N regions still cost one round trip.
         let copies: Vec<_> = regions
             .iter()
             .zip(&staging)
@@ -577,6 +687,31 @@ impl WgpuContext {
             layout: &layout,
             entries: &entries,
         });
+        // Inside a scope this records into the shared encoder and pass and
+        // returns; the submit happens once, when the outermost scope drops.
+        // Outside one the behaviour is what it has always been, which is what
+        // lets this exist without touching a single caller.
+        let mut scope = self.scope.lock().unwrap();
+        if scope.depth > 0 {
+            let ScopeState { encoder, pass, .. } = &mut *scope;
+            // `flush` may have taken both mid-scope; remake what is missing.
+            let encoder = encoder
+                .get_or_insert_with(|| self.device.create_command_encoder(&Default::default()));
+            let pass = match pass {
+                Some(p) => p,
+                None => pass.insert(
+                    encoder
+                        .begin_compute_pass(&Default::default())
+                        .forget_lifetime(),
+                ),
+            };
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(workgroups.0, workgroups.1, workgroups.2);
+            return;
+        }
+        drop(scope);
+
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
