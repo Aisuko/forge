@@ -4,33 +4,10 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] — 2026-08-02
 
-The site, which 0.3.0 deferred, and the removal of dispatch scopes.
-
-### Removed
-
-- **Dispatch scopes.** `Device::dispatch_scope()`, `WgpuContext::scope()`,
-  `WgpuContext::flush()` and the `DispatchScope` guard are gone; every
-  `dispatch` again creates its own command encoder, its own compute pass and its
-  own `queue.submit`. This is a breaking API change, and it gives back the
-  headline win of 0.2.0 — the cost is what that release measured, in the other
-  direction:
-
-  | | with scopes | without |
-  | --- | --- | --- |
-  | decode, ms/token | 3.832 | **6.626** (1.73× slower) |
-  | decode, tokens/sec | 261 | **151** |
-  | submits per decoded token | 1 | **100** |
-  | prompt encode, ms/token | 0.120 | **0.231** (1.93× slower) |
-  | submits, 128-token session | 798 | **79,800** |
-
-  NVIDIA RTX A5000, Vulkan, `assets/shakespeare_char`. Reproduce with
-  `cargo run --release --example bench`. The device counters and the buffer pool
-  are unaffected — `buffers/token` stays at 1.0 either way.
-- The two dispatch-scope tests in `tests/pool.rs`. The pool's own two
-  invariants — recycled contents must not change results, and `unsplit_head`
-  must zero the thirds it does not write — are still covered.
+The site, which 0.3.0 deferred, and the test-suite hang, diagnosed. No breaking
+API change: `Device::dispatch_scope()` and the 0.2.0 decode rate both stay.
 
 ### Added
 
@@ -52,9 +29,9 @@ The site, which 0.3.0 deferred, and the removal of dispatch scopes.
 
 ### Changed
 
-- Both tools depend on `forge-ml = { path = "../..", version = "0.3" }`.
+- Both tools depend on `forge-ml = { path = "../..", version = "0.4" }`.
   `path` is what the workspace resolves; `version` is only sayable because
-  0.3.0 shipped, and makes each manifest a publishable shape. They stay
+  the crate is published, and makes each manifest a publishable shape. They stay
   `publish = false`: they demonstrate the runtime, they are not libraries to
   depend on.
 - `check_site.py` separates errors from warnings. A missing asset or an
@@ -74,6 +51,53 @@ The site, which 0.3.0 deferred, and the removal of dispatch scopes.
 
 ### Fixed
 
+- **The test suite hung for minutes at a time, and dispatch scopes were not
+  why.** Creating more than one `Device` concurrently wedges inside the driver:
+  eight parallel `Device::wgpu()` calls, doing no compute at all, hung 25 runs
+  out of 25. `tests/pool.rs` did exactly that — libtest runs its tests on
+  parallel threads, and each built its own device — so a full `cargo test`
+  hung roughly one run in four.
+
+  `WgpuContext::new_async` now serializes creation behind a process-global
+  gate: 0 hangs out of 25 on the same reproducer, and 0 out of 8 full-suite
+  runs. Every path is covered — the sync facade holds no lock of its own, so a
+  thread on `Device::wgpu()` and a thread on `Device::wgpu_async()` serialize
+  against each other rather than racing past two separate locks. The gate is a
+  40-line async mutex (`src/backend/wgpu/serial.rs`) rather than
+  `std::sync::Mutex`, because a `std` guard held across the `.await` in
+  `new_async` would make that future `!Send` and stop dependents spawning it on
+  a runtime; and rather than `tokio::sync::Mutex`, because that is a runtime
+  dependency — on the wasm build too — to hold a bool.
+
+  The tests keep a device each — the pool and the scope depth are per-context,
+  so sharing one would have let a neighbouring test take the dirtied buffer or
+  batch the arm the scope test calls "unscoped", passing while checking less.
+  `tests/device_concurrency.rs` is the reproducer, kept: eight threads, four
+  rounds of create-and-drop each, on the async path and on a mix of both. With
+  the gate removed it wedges; with it, 3 runs of 3 clean. It joins through
+  `recv_timeout`, so a regression fails in two minutes instead of hanging the
+  suite with no message.
+
+  Scopes were removed in the run-up to this release on the theory that they
+  caused the hang. They did not — it reproduces with them gone, in a test that
+  never dispatches — so they are restored, and with them the batching 0.2.0
+  shipped. Measured back to back on one machine, RTX A5000 / Vulkan /
+  `assets/shakespeare_char`, `cargo run --release --example bench`:
+
+  | | with scopes | without |
+  | --- | --- | --- |
+  | decode, ms/token | **4.197** | 6.581 (1.57× slower) |
+  | decode, tokens/sec | **238.3** | 152.0 |
+  | submits per decoded token | **1.0** | 100.0 |
+  | submits, 128-token session | **798** | 79,800 |
+- **The council's projection panel drew the wrong thing.** Its extent was fitted
+  to a rolling window of the merged vector's path, which travels ~2 units per
+  character while the four experts differ by 2.45 in total — so the five dots
+  the panel is named after occupied 17% of it, measured on the built page, while
+  the trail sprawled across the rest. The merge is now pinned to the centre and
+  the scale is the disagreement around it, which puts the furthest expert at 80%
+  of the panel radius. The path cannot survive that rescale — a character of
+  travel is more than a radius — so only its bearing is drawn.
 - `build_site.sh` ended in `check_site.py … || true`, so it exited 0 while
   reporting three missing assets. The site build had been broken since
   `assets/council/` moved, and nothing said so.
@@ -275,6 +299,7 @@ no CUDA toolchain and no Python interpreter in the loop.
 CPU↔WGPU parity to a max logit difference of 8.4e-5, and Forge↔HuggingFace
 transformers to 1.75e-4, on GPT-2 124M weights on an NVIDIA RTX A5000.
 
+[0.4.0]: https://github.com/Aisuko/forge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Aisuko/forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Aisuko/forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Aisuko/forge/releases/tag/v0.1.0

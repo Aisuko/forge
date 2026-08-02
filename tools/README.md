@@ -37,12 +37,12 @@ already exists), `Sampler` and `top_probs`.
 ## The dependency names a path and a version
 
 ```toml
-forge-ml = { path = "../..", version = "0.3" }
+forge-ml = { path = "../..", version = "0.4" }
 ```
 
 `path` is what a workspace build resolves, so a tool always compiles against the
 `src/` beside it. `version` is what a registry would resolve, and it is only
-sayable because `forge-ml` 0.3.0 is on crates.io — a manifest in this shape is
+sayable because `forge-ml` is on crates.io — a manifest in this shape is
 publishable, so nothing here assumes it lives in this repository.
 
 They stay `publish = false` anyway. These demonstrate the runtime; they are not

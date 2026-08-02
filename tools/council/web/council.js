@@ -31,9 +31,8 @@ const state = {
   names: [],
   nEmbd: 0,
   proj: null, // [2][nEmbd] fixed random projection
-  bounds: null, // eased extent of the recent projected cloud
-  cloud: [], // last FIT_WINDOW frames of projected points, for the extent
-  trail: [], // past merged positions, oldest first
+  radius: null, // eased half-width of the view, in projection units
+  prev: null, // last frame's merged position, for the tail's bearing
   nodes: [], // per-expert SVG handles
   paths: [], // per-expert edge <path>
 };
@@ -299,52 +298,29 @@ function project(h) {
 }
 
 /**
- * Bounds over a rolling window of recent frames, eased toward rather than
- * snapped to.
+ * Half-width of the view: the furthest expert's distance from the merge, plus
+ * headroom. Every expert is inside it — the merge is their convex combination.
  *
- * Grow-only bounds were the obvious choice and the wrong one: the merged vector
- * wanders a long way over a sentence, so after thirty characters the extent is
- * set by where the *trail* has been and the four dots of the current frame
- * collapse into a corner — which is the one thing the panel exists to show. A
- * window keeps the current frame legible; the easing keeps the plane from
- * breathing on every character.
+ * Fitting a box over recent frames instead scales the view to the merge's
+ * journey, which is ~2 units per character against 2.45 of disagreement across
+ * the whole council: the five dots came out at 17% of the panel, measured.
  */
-// Short on purpose. The merged vector wanders much further over a sentence
-// than the four experts differ within one character, so a long window scales
-// the view to the journey and squashes the disagreement — and the
-// disagreement is what the panel is called after.
-const FIT_WINDOW = 6;
+const MARGIN = 1.25;
 
-function fit(points) {
-  state.cloud.push(points);
-  if (state.cloud.length > FIT_WINDOW) state.cloud.shift();
-
-  let x0 = Infinity;
-  let x1 = -Infinity;
-  let y0 = Infinity;
-  let y1 = -Infinity;
-  for (const frame of state.cloud) {
-    for (const [x, y] of frame) {
-      x0 = Math.min(x0, x);
-      x1 = Math.max(x1, x);
-      y0 = Math.min(y0, y);
-      y1 = Math.max(y1, y);
-    }
+function fit(experts, merged) {
+  let r = 0;
+  for (const [x, y] of experts) {
+    r = Math.max(r, Math.hypot(x - merged[0], y - merged[1]));
   }
-  const target = { x0, x1, y0, y1 };
-  if (!state.bounds) {
-    state.bounds = target;
-    return target;
-  }
-  const k = 0.25;
-  const ease = (a, b) => a + (b - a) * k;
-  state.bounds = {
-    x0: ease(state.bounds.x0, target.x0),
-    x1: ease(state.bounds.x1, target.x1),
-    y0: ease(state.bounds.y0, target.y0),
-    y1: ease(state.bounds.y1, target.y1),
-  };
-  return state.bounds;
+  const target = Math.max(r, 1e-3) * MARGIN;
+  // Grow on the frame it happens — easing a growing radius clips the dot that
+  // grew it — and ease the shrink, or the plane breathes every character. Fast,
+  // because the spread swings ~11× per character and this tracks its maximum.
+  state.radius =
+    state.radius === null
+      ? target
+      : Math.max(target, state.radius + (target - state.radius) * 0.5);
+  return state.radius;
 }
 
 function drawPlane(step) {
@@ -362,32 +338,44 @@ function drawPlane(step) {
 
   const pts = step.experts.map((e) => project(e.hidden));
   const merged = project(step.hidden);
-  const b = fit([...pts, merged]);
+  const radius = fit(pts, merged);
 
+  // The merge is the origin: it sits at the centre every frame, and the scale
+  // is the disagreement around it. Nothing else competes for the scale.
   const pad = 22;
-  const spanX = Math.max(b.x1 - b.x0, 1e-3);
-  const spanY = Math.max(b.y1 - b.y0, 1e-3);
-  const span = Math.max(spanX, spanY);
+  const half = (size - 2 * pad) / 2;
   const to = ([x, y]) => [
-    pad + ((x - (b.x0 + b.x1) / 2) / span + 0.5) * (size - 2 * pad),
-    pad + ((y - (b.y0 + b.y1) / 2) / span + 0.5) * (size - 2 * pad),
+    size / 2 + ((x - merged[0]) / radius) * half,
+    size / 2 + ((y - merged[1]) / radius) * half,
   ];
 
-  // The path the merged vector has taken so far — the sentence, as a shape.
-  state.trail.push(merged);
-  if (state.trail.length > 14) state.trail.shift();
-  ctx.strokeStyle = MERGE_COLOR;
-  ctx.globalAlpha = 0.22;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  state.trail.forEach((p, i) => {
-    const [x, y] = to(p);
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  });
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  // Where it just came from. The whole path cannot be drawn in these units — a
+  // character of travel is more than a radius, and a segment joining two
+  // off-panel vertices still cuts across the view, which was the old scribble.
+  // Only the bearing survives the rescale, so only the bearing is drawn: the
+  // length is capped and means nothing.
+  const [mx, my] = [size / 2, size / 2];
+  const prev = state.prev;
+  state.prev = merged;
+  if (prev) {
+    const [dx, dy] = [prev[0] - merged[0], prev[1] - merged[1]];
+    const len = Math.hypot(dx, dy);
+    if (len > 1e-6) {
+      const [tx, ty] = [mx + (dx / len) * half, my + (dy / len) * half];
+      const grad = ctx.createLinearGradient(mx, my, tx, ty);
+      grad.addColorStop(0, MERGE_COLOR);
+      grad.addColorStop(1, "transparent");
+      ctx.strokeStyle = grad;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(mx, my);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
 
-  const [mx, my] = to(merged);
   pts.forEach((p, k) => {
     const [x, y] = to(p);
     const color = EXPERT_COLORS[k % EXPERT_COLORS.length];
@@ -492,9 +480,8 @@ async function run() {
 
   state.running = true;
   state.stop = false;
-  state.trail = [];
-  state.cloud = [];
-  state.bounds = null;
+  state.prev = null;
+  state.radius = null;
   $("council-run").disabled = true;
   $("council-stop").disabled = false;
   $("council-out").textContent = prompt;
