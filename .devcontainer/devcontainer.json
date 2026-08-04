@@ -12,7 +12,7 @@
 		"ghcr.io/devcontainers/features/rust:1": {
 			"version": "latest",
 			"profile": "minimal",
-			"targets": "aarch64-unknown-linux-gnu",
+			"targets": "wasm32-unknown-unknown",
 			"components": "rust-analyzer,rust-src,rustfmt,clippy"
 		}
 	},
@@ -29,10 +29,13 @@
 	],
 	// Vulkan loader + software fallback; scripts/setup_nvidia_vulkan.sh adds
 	// the NVIDIA ICD manifest, the GLVND EGL vendor manifest, the modeset
-	// node, and fixes /dev/dri permissions.
+	// node, and fixes /dev/dri permissions. chromium is the WebGPU browser
+	// `make site-verify` drives headlessly.
 	// install_hooks.sh points core.hooksPath at .githooks/ — the local CI gate
 	// (see scripts/ci_local.sh). git does not wire that up per clone on its own.
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 && bash scripts/install_hooks.sh; bash scripts/setup_nvidia_vulkan.sh || true",
+	// install_wasm_bindgen.sh pins the CLI to the wasm-bindgen in Cargo.lock,
+	// which the site build (and so the tail of that gate) needs.
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 chromium && bash scripts/install_hooks.sh && bash scripts/install_wasm_bindgen.sh; bash scripts/setup_nvidia_vulkan.sh || true",
 	// /dev/dri is re-mounted with the host's restrictive perms on every
 	// container start (not just creation), so the DAC/GLVND fixes need to
 	// re-run on every start too, not only once via postCreateCommand.
