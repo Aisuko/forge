@@ -26,7 +26,8 @@ distribution — the rest is discarded inside the forward pass. Hovering does no
 model work at all: the arrays are stashed once and hover is an index lookup.
 
 The model is the 10.6 M-parameter char-level Shakespeare checkpoint in
-`assets/shakespeare_char/`, which the build copies into `dist/model/`.
+`assets/shakespeare_char/` — 6.7 MB of `.fzm` q4, dequantized to f32 on load —
+which the build copies into `dist/model/`.
 
 Deployed as part of the site — `make site` builds all three pages together, and
 they share one copy of that checkpoint. See [`../README.md`](../README.md).

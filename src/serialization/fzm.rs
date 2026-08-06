@@ -114,6 +114,46 @@ fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8]> {
     Ok(slice)
 }
 
+/// Tensor names and shapes, without dequantizing a single value.
+///
+/// The safetensors counterpart is `SafeTensors::read_metadata`, and the reason
+/// is the same one: a model browser listing a checkpoint must not pay for its
+/// weights. Headers and bodies are interleaved here rather than pooled in a
+/// leading JSON block, so this walks the file — but it only ever *skips* the
+/// bodies, so against an mmap the OS pages in a few KB rather than the file.
+pub fn read_fzm_header(bytes: &[u8]) -> Result<Vec<(String, Vec<usize>)>> {
+    let mut pos = 0usize;
+    if take(bytes, &mut pos, 4)? != MAGIC {
+        return Err(ForgeError::Fzm("bad magic".into()));
+    }
+    let tensor_count = u32::from_le_bytes(take(bytes, &mut pos, 4)?.try_into().unwrap());
+
+    let mut out = Vec::with_capacity(tensor_count as usize);
+    for _ in 0..tensor_count {
+        let (name, shape, _, n_groups) = read_tensor_header(bytes, &mut pos)?;
+        let numel: usize = shape.iter().product();
+        take(bytes, &mut pos, n_groups * 8 + numel.div_ceil(2))?;
+        out.push((name, shape));
+    }
+    Ok(out)
+}
+
+/// One tensor's header: `(name, shape, group_size, n_groups)`. Leaves `pos` at
+/// the first byte of that tensor's body.
+fn read_tensor_header(bytes: &[u8], pos: &mut usize) -> Result<(String, Vec<usize>, usize, usize)> {
+    let name_len = u16::from_le_bytes(take(bytes, pos, 2)?.try_into().unwrap()) as usize;
+    let name = String::from_utf8(take(bytes, pos, name_len)?.to_vec())
+        .map_err(|_| ForgeError::Fzm("bad utf8 name".into()))?;
+    let ndim = take(bytes, pos, 1)?[0] as usize;
+    let mut shape = Vec::with_capacity(ndim);
+    for _ in 0..ndim {
+        shape.push(u32::from_le_bytes(take(bytes, pos, 4)?.try_into().unwrap()) as usize);
+    }
+    let group_size = u32::from_le_bytes(take(bytes, pos, 4)?.try_into().unwrap()) as usize;
+    let n_groups = u32::from_le_bytes(take(bytes, pos, 4)?.try_into().unwrap()) as usize;
+    Ok((name, shape, group_size, n_groups))
+}
+
 /// Load a `.fzm` file from disk, dequantized to f32.
 pub fn load_fzm_q4_file(path: impl AsRef<Path>) -> Result<TensorEntries> {
     let bytes = std::fs::read(path.as_ref())
@@ -134,16 +174,7 @@ pub fn load_fzm_q4(bytes: &[u8]) -> Result<TensorEntries> {
 
     let mut out = Vec::with_capacity(tensor_count as usize);
     for _ in 0..tensor_count {
-        let name_len = u16::from_le_bytes(take(bytes, &mut pos, 2)?.try_into().unwrap()) as usize;
-        let name = String::from_utf8(take(bytes, &mut pos, name_len)?.to_vec())
-            .map_err(|_| ForgeError::Fzm("bad utf8 name".into()))?;
-        let ndim = take(bytes, &mut pos, 1)?[0] as usize;
-        let mut shape = Vec::with_capacity(ndim);
-        for _ in 0..ndim {
-            shape.push(u32::from_le_bytes(take(bytes, &mut pos, 4)?.try_into().unwrap()) as usize);
-        }
-        let group_size = u32::from_le_bytes(take(bytes, &mut pos, 4)?.try_into().unwrap()) as usize;
-        let n_groups = u32::from_le_bytes(take(bytes, &mut pos, 4)?.try_into().unwrap()) as usize;
+        let (name, shape, group_size, n_groups) = read_tensor_header(bytes, &mut pos)?;
         let numel: usize = shape.iter().product();
 
         let mut groups = Vec::with_capacity(n_groups);
@@ -194,5 +225,36 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         assert!(load_fzm_q4(b"NOPE").is_err());
+        assert!(read_fzm_header(b"NOPE").is_err());
+    }
+
+    /// The header walk must agree with the full load, or forge-top would list
+    /// shapes the loader does not see.
+    #[test]
+    fn header_walk_matches_a_full_load() {
+        let entries = vec![
+            (
+                "a".to_string(),
+                vec![3, 7],
+                (0..21).map(|i| i as f32).collect(),
+            ),
+            (
+                "b.weight".to_string(),
+                vec![130],
+                (0..130).map(|i| i as f32 * 0.5).collect(),
+            ),
+        ];
+        let path = std::env::temp_dir().join("forge_fzm_header_test.fzm");
+        save_fzm_q4(&path, &entries).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let header = read_fzm_header(&bytes).unwrap();
+        let full = load_fzm_q4(&bytes).unwrap();
+        assert_eq!(header.len(), full.len());
+        for ((hn, hs), (fname, fshape, _)) in header.iter().zip(&full) {
+            assert_eq!(hn, fname);
+            assert_eq!(hs, fshape);
+        }
     }
 }

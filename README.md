@@ -43,7 +43,7 @@ https://github.com/user-attachments/assets/d3487d8f-40a1-4c84-9f98-d4a7c5ce1550
 ## Run it
 
 ```bash
-# Generate — the 43 MB char-level Shakespeare model ships in the repo
+# Generate — the 6.7 MB char-level Shakespeare model ships in the repo
 cargo run --release --example generate -- --model assets/shakespeare_char --prompt "ROMEO:"
 
 # Real GPT-2 124M weights — the parity run from tests/gpt2_e2e.rs
@@ -81,9 +81,11 @@ use forge::{AnyTokenizer, Device, Gpt2, Gpt2Config, Sampling};
 
 // assets/shakespeare_char ships in the repo; swap in models/gpt2 after
 // running scripts/local/download_gpt2.sh — AnyTokenizer picks char or BPE by what it finds.
+// from_checkpoint reads .fzm (q4) or .safetensors, whichever the directory has.
 let device = Device::wgpu()?; // or Device::Cpu
 let config = Gpt2Config::from_json("assets/shakespeare_char/config.json")?;
-let model = Gpt2::from_safetensors("assets/shakespeare_char/model.safetensors", config, &device)?;
+let weights = forge::serialization::checkpoint_in_dir("assets/shakespeare_char")?;
+let model = Gpt2::from_checkpoint(weights, config, &device)?;
 let tok = AnyTokenizer::from_dir("assets/shakespeare_char")?;
 let text = model.generate(&tok, "ROMEO:", 40, Sampling::Greedy)?;
 ```

@@ -8,6 +8,10 @@
 # text), one shared config.json and one shared vocab.json. There is deliberately
 # only one of each: the experts share a vocabulary and a shape, and shipping
 # four copies would let them drift apart silently.
+#
+# Training keeps f32 safetensors; shipping quantizes each expert to `.fzm` q4.
+# The council page downloads all four before it can answer anything, so the
+# 6.4x is paid four times over.
 # Run from the repository root: the checkpoints and the corpus manifest live
 # there, and only the destination belongs to this tool.
 set -euo pipefail
@@ -32,7 +36,8 @@ cp "$SRC/expert0.vocab.json" "$DEST/vocab.json"
 for ((k = 0; k < N; k++)); do
   best="$SRC/expert$k.best.safetensors"
   [[ -f "$best" ]] || { echo "missing $best — run ./tools/council/scripts/train_council.sh" >&2; exit 1; }
-  cp "$best" "$DEST/expert$k.safetensors"
+  cargo run --release --quiet --example to_fzm -- \
+    --config "$DEST/config.json" --in "$best" --out "$DEST/expert$k.fzm"
 done
 
 # The page's manifest: labels come from the corpus split, val losses from each
@@ -46,7 +51,7 @@ labels = [e["label"] for e in json.load(open(manifest))["experts"]]
 
 experts = []
 for k in range(n):
-    entry = {"file": f"expert{k}.safetensors", "label": labels[k]}
+    entry = {"file": f"expert{k}.fzm", "label": labels[k]}
     log = os.path.join(src, f"expert{k}.metrics.jsonl")
     if os.path.exists(log):
         rows = [json.loads(l) for l in open(log) if l.strip()]

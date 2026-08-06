@@ -43,7 +43,7 @@ errors, warnings = [], []
 # here is invisible until a visitor presses Run.
 RUNTIME_FETCHES = {
     "index.html": [
-        "./model/model.safetensors",
+        "./model/model.fzm",
         "./model/config.json",
         "./model/vocab.json",
         "./model/metrics.json",
@@ -55,7 +55,7 @@ RUNTIME_FETCHES = {
     ],
     # react.html loads the char model on open, not on a button press.
     "react.html": [
-        "./model/model.safetensors",
+        "./model/model.fzm",
         "./model/config.json",
         "./model/vocab.json",
     ],

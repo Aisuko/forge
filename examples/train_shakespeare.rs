@@ -298,7 +298,7 @@ fn main() {
     // rather than an error.
     let mut model = if a.resume || a.eval_only {
         println!("loading {}", a.checkpoint);
-        Gpt2::from_safetensors(&a.checkpoint, config.clone(), &device).unwrap()
+        Gpt2::from_checkpoint(&a.checkpoint, config.clone(), &device).unwrap()
     } else {
         Gpt2::init_random(config.clone(), &device, a.seed).unwrap()
     };
@@ -386,7 +386,14 @@ fn main() {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
-    let best_path = dir.join(format!("{stem}.best.safetensors"));
+    // Same extension as --checkpoint, so `--checkpoint m.fzm` does not write
+    // its best weights into a safetensors file nobody looks at.
+    let ext = std::path::Path::new(&a.checkpoint)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("safetensors")
+        .to_string();
+    let best_path = dir.join(format!("{stem}.best.{ext}"));
     let log_path = dir.join(format!("{stem}.metrics.jsonl"));
     let mut log = std::fs::File::create(&log_path).ok();
     // An "improvement" smaller than this is evaluation noise, not progress.
@@ -469,7 +476,7 @@ fn main() {
                 best_val = va;
                 best_step = step;
                 stale = 0;
-                model.save_safetensors(&best_path).unwrap();
+                model.save_checkpoint(&best_path).unwrap();
                 write_sidecars(best_path.to_str().unwrap(), &model.config, &tok);
             } else {
                 stale += 1;
@@ -516,7 +523,7 @@ fn main() {
             std::io::stdout().flush().ok();
         }
         if step % 500 == 0 || step == a.steps {
-            model.save_safetensors(&a.checkpoint).unwrap();
+            model.save_checkpoint(&a.checkpoint).unwrap();
             save_sidecars(&model);
             println!("checkpoint saved to {}", a.checkpoint);
         }

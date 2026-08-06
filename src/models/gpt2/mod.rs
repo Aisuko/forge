@@ -276,6 +276,35 @@ pub struct Surprisal {
 }
 
 impl Gpt2 {
+    /// Load a checkpoint of either format from disk, by content and not by
+    /// extension — see [`Gpt2::from_checkpoint_bytes`]. Pair it with
+    /// [`crate::serialization::checkpoint_in_dir`] to load a model directory
+    /// without caring which format it ships.
+    pub fn from_checkpoint(
+        path: impl AsRef<Path>,
+        config: Gpt2Config,
+        device: &Device,
+    ) -> Result<Self> {
+        let bytes = std::fs::read(path.as_ref())?;
+        Self::from_checkpoint_bytes(&bytes, config, device)
+    }
+
+    /// Load a checkpoint of either format, chosen by sniffing the leading
+    /// magic bytes: `.fzm`'s `"FZM1"` header, otherwise `.safetensors`. This
+    /// is what the wasm bindings use, so a page can fetch either extension
+    /// without the JS side knowing which codec is behind it.
+    pub fn from_checkpoint_bytes(
+        bytes: &[u8],
+        config: Gpt2Config,
+        device: &Device,
+    ) -> Result<Self> {
+        if bytes.starts_with(b"FZM1") {
+            Self::from_fzm_bytes(bytes, config, device)
+        } else {
+            Self::from_safetensors_bytes(bytes, config, device)
+        }
+    }
+
     /// Load HF GPT-2 weights. `path` is the .safetensors file. Weight names
     /// may or may not carry the "transformer." prefix; both are accepted.
     /// The LM head is tied to `wte` (the checkpoint has no separate tensor).
@@ -1147,27 +1176,31 @@ impl Gpt2 {
     /// Save a checkpoint loadable by `from_safetensors`. A chunked wte is
     /// reassembled host-side first.
     pub fn save_safetensors(&self, path: impl AsRef<Path>) -> Result<()> {
-        let c = self.config.n_embd;
-        let mut wte_host = Vec::with_capacity(self.config.vocab_size * c);
-        for ch in &self.emb.wte_chunks {
-            wte_host.extend(ch.to_vec_f32()?);
-        }
-        let mut entries = vec![(
-            "wte.weight".to_string(),
-            vec![self.config.vocab_size, c],
-            wte_host,
-        )];
-        let specs = self.param_specs();
-        let params = self.params_for_save()?;
-        for ((name, _), t) in specs.iter().zip(params).skip(1) {
-            entries.push((name.clone(), t.shape().dims().to_vec(), t.to_vec_f32()?));
-        }
-        crate::serialization::save_safetensors(path, &entries)
+        crate::serialization::save_safetensors(path, &self.save_entries()?)
     }
 
     /// Save a checkpoint loadable by `from_fzm`, quantized to `.fzm` q4. A
     /// chunked wte is reassembled host-side first, same as `save_safetensors`.
     pub fn save_fzm(&self, path: impl AsRef<Path>) -> Result<()> {
+        crate::serialization::fzm::save_fzm_q4(path, &self.save_entries()?)
+    }
+
+    /// Save in whichever format `path`'s extension names — `.fzm` q4, else
+    /// safetensors. The write-side counterpart of [`Gpt2::from_checkpoint`],
+    /// so a caller carrying a checkpoint path around (the trainer's
+    /// `--checkpoint`) cannot write one format under the other's name.
+    pub fn save_checkpoint(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if path.extension().and_then(|s| s.to_str()) == Some("fzm") {
+            self.save_fzm(path)
+        } else {
+            self.save_safetensors(path)
+        }
+    }
+
+    /// `(name, shape, host f32)` for every parameter, in `param_specs` order.
+    /// Both savers want exactly this; the only difference is the codec.
+    fn save_entries(&self) -> Result<crate::serialization::fzm::TensorEntries> {
         let c = self.config.n_embd;
         let mut wte_host = Vec::with_capacity(self.config.vocab_size * c);
         for ch in &self.emb.wte_chunks {
@@ -1183,7 +1216,7 @@ impl Gpt2 {
         for ((name, _), t) in specs.iter().zip(params).skip(1) {
             entries.push((name.clone(), t.shape().dims().to_vec(), t.to_vec_f32()?));
         }
-        crate::serialization::fzm::save_fzm_q4(path, &entries)
+        Ok(entries)
     }
 
     /// Like `params` but tolerates a chunked wte (slot 0 is unused by the

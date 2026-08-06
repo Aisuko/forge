@@ -1,5 +1,5 @@
-//! Model discovery: walk the given roots for `*.safetensors` and read each
-//! file's *header only*.
+//! Model discovery: walk the given roots for `*.safetensors` and `*.fzm` and
+//! read each file's *header only*.
 //!
 //! The whole point is that listing a 548 MB checkpoint must not cost 548 MB of
 //! RSS. `SafeTensors::read_metadata` looks like it accepts just the header but
@@ -7,6 +7,11 @@
 //! (`safetensors-0.5.3/src/tensor.rs:320`), so the file is memory-mapped and
 //! the full mapped slice handed over — the OS pages in only the few KB the
 //! parser actually touches. `SafeTensors::deserialize` is never called here.
+//!
+//! `.fzm` gets the same treatment through `read_fzm_header`, which walks the
+//! per-tensor headers and skips every body. Without it the shipped
+//! `assets/shakespeare_char/` would simply vanish from the list the day it was
+//! quantized.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,7 +51,7 @@ impl TokenizerKind {
 
 #[derive(Clone)]
 pub struct ModelInfo {
-    /// The `.safetensors` file itself.
+    /// The `.safetensors` or `.fzm` file itself.
     pub path: PathBuf,
     /// Display name — the parent directory for `models/gpt2/model.safetensors`,
     /// otherwise the file stem.
@@ -144,7 +149,10 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             if !skip {
                 collect(&path, depth + 1, out);
             }
-        } else if path.extension().and_then(|s| s.to_str()) == Some("safetensors") {
+        } else if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("safetensors" | "fzm")
+        ) {
             out.push(path);
         }
     }
@@ -158,18 +166,28 @@ fn read_model(path: &Path) -> Result<ModelInfo, String> {
     // (reading 548 MB to draw a list) is what this whole module exists to
     // avoid.
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| e.to_string())?;
-    let (_, meta) =
-        safetensors::SafeTensors::read_metadata(&mmap).map_err(|e| format!("header: {e}"))?;
-
-    let map: HashMap<String, &safetensors::tensor::TensorInfo> = meta.tensors();
-    let mut tensors: Vec<TensorEntry> = map
-        .iter()
-        .map(|(name, info)| TensorEntry {
-            name: name.clone(),
-            shape: info.shape.clone(),
-            dtype: format!("{:?}", info.dtype),
-        })
-        .collect();
+    let mut tensors = if mmap.starts_with(b"FZM1") {
+        forge::serialization::fzm::read_fzm_header(&mmap)
+            .map_err(|e| format!("header: {e}"))?
+            .into_iter()
+            .map(|(name, shape)| TensorEntry {
+                name,
+                shape,
+                dtype: "Q4".to_string(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let (_, meta) =
+            safetensors::SafeTensors::read_metadata(&mmap).map_err(|e| format!("header: {e}"))?;
+        let map: HashMap<String, &safetensors::tensor::TensorInfo> = meta.tensors();
+        map.iter()
+            .map(|(name, info)| TensorEntry {
+                name: name.clone(),
+                shape: info.shape.clone(),
+                dtype: format!("{:?}", info.dtype),
+            })
+            .collect::<Vec<_>>()
+    };
     tensors.sort_by(|a, b| a.name.cmp(&b.name));
     let params: usize = tensors
         .iter()

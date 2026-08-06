@@ -7,6 +7,7 @@
 
 use std::ops::ControlFlow;
 
+use forge::serialization::checkpoint_in_dir;
 use forge::{
     AnyTokenizer, AttnStep, Device, Gpt2, Gpt2Config, Sampling, StepTrace, Tokenizer as _,
 };
@@ -14,8 +15,12 @@ use forge::{
 const DIR: &str = "assets/shakespeare_char";
 const PROMPT: &str = "ROMEO:";
 
+fn model_on(config: Gpt2Config, device: &Device) -> Gpt2 {
+    Gpt2::from_checkpoint(checkpoint_in_dir(DIR).unwrap(), config, device).unwrap()
+}
+
 fn assets() -> Option<(Gpt2Config, AnyTokenizer)> {
-    if !std::path::Path::new(DIR).join("model.safetensors").exists() {
+    if checkpoint_in_dir(DIR).is_err() {
         eprintln!("skipping: {DIR} not present (train and run scripts/ship_char_model.sh)");
         return None;
     }
@@ -45,9 +50,7 @@ fn greedy_is_identical_on_cpu_and_wgpu() {
     };
     let mut outputs = Vec::new();
     for device in [Device::Cpu, Device::wgpu().unwrap()] {
-        let model =
-            Gpt2::from_safetensors(format!("{DIR}/model.safetensors"), config.clone(), &device)
-                .unwrap();
+        let model = model_on(config.clone(), &device);
         let text = model.generate(&tok, PROMPT, 48, Sampling::Greedy).unwrap();
         println!("{}: {text:?}", device.describe());
         outputs.push(text);
@@ -63,8 +66,7 @@ fn generation_stays_inside_the_vocabulary() {
     let Some((config, tok)) = assets() else {
         return;
     };
-    let model =
-        Gpt2::from_safetensors(format!("{DIR}/model.safetensors"), config, &Device::Cpu).unwrap();
+    let model = model_on(config, &Device::Cpu);
     let text = model
         .generate(
             &tok,
@@ -92,10 +94,6 @@ fn generation_stays_inside_the_vocabulary() {
 // The website renders these numbers as a live 3D view while it generates, so
 // what matters is that they are the model's own softmax output and that
 // capturing them changes nothing.
-
-fn model_on(config: Gpt2Config, device: &Device) -> Gpt2 {
-    Gpt2::from_safetensors(format!("{DIR}/model.safetensors"), config, device).unwrap()
-}
 
 #[test]
 fn attention_probe_captures_the_real_softmax() {

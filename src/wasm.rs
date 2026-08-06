@@ -109,8 +109,9 @@ fn js_err(e: crate::ForgeError) -> JsValue {
 
 #[wasm_bindgen]
 impl WasmGpt2 {
-    /// Build a BPE model from fetched assets: `model.safetensors` bytes,
-    /// `config.json`, `vocab.json`, and `merges.txt` contents.
+    /// Build a BPE model from fetched assets: model checkpoint bytes
+    /// (`.safetensors` or `.fzm`, detected automatically), `config.json`,
+    /// `vocab.json`, and `merges.txt` contents.
     pub async fn load(
         model_bytes: Vec<u8>,
         config_json: &str,
@@ -140,7 +141,7 @@ impl WasmGpt2 {
     ) -> Result<WasmGpt2, JsValue> {
         let device = Device::wgpu_async().await.map_err(js_err)?;
         let config = Gpt2Config::from_json_str(config_json).map_err(js_err)?;
-        let model = Gpt2::from_safetensors_bytes(&model_bytes, config, &device).map_err(js_err)?;
+        let model = Gpt2::from_checkpoint_bytes(&model_bytes, config, &device).map_err(js_err)?;
         Ok(WasmGpt2 {
             model,
             tokenizer,

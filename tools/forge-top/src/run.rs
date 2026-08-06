@@ -70,7 +70,7 @@ fn execute(spec: RunSpec, send: &Sender<Event>, cancel: &AtomicBool) -> Result<(
         .clone()
         .ok_or("model has no usable config.json")?;
     let tokenizer = load_tokenizer(&spec.model)?;
-    let model = Gpt2::from_safetensors(&spec.model.path, config, &device)
+    let model = Gpt2::from_checkpoint(&spec.model.path, config, &device)
         .map_err(|e| format!("load failed: {e}"))?;
     let _ = send.send(Event::RunStarted {
         device: device.describe(),

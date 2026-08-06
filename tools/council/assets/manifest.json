@@ -2,28 +2,28 @@
   "n_experts": 4,
   "experts": [
     {
-      "file": "expert0.safetensors",
+      "file": "expert0.fzm",
       "label": "Gloucester & Menenius",
       "val_loss": 1.7263,
-      "bytes": 3342104
+      "bytes": 523284
     },
     {
-      "file": "expert1.safetensors",
+      "file": "expert1.fzm",
       "label": "Romeo & Juliet",
       "val_loss": 1.6952,
-      "bytes": 3342104
+      "bytes": 523284
     },
     {
-      "file": "expert2.safetensors",
+      "file": "expert2.fzm",
       "label": "Leontes & Warwick",
       "val_loss": 1.7221,
-      "bytes": 3342104
+      "bytes": 523284
     },
     {
-      "file": "expert3.safetensors",
+      "file": "expert3.fzm",
       "label": "Duke Vincentio & Petruchio",
       "val_loss": 1.8897,
-      "bytes": 3342104
+      "bytes": 523284
     }
   ],
   "note": "Branched from one ancestor, fine-tuned with wte/wpe frozen so the experts share an embedding basis and a wte-tied decoder."

@@ -8,7 +8,7 @@
 #
 # Each page's source stays where it is owned — docs/src/ for the landing page,
 # tools/*/web/ for the tools — and is copied here, never duplicated. The core
-# wasm bundle and the 43 MB checkpoint are built once and read by two pages;
+# wasm bundle and the 6.7 MB checkpoint are built once and read by two pages;
 # assembling three self-contained dist/s instead would ship them twice.
 #
 # Everything is relative to the artifact root: the site is served from /forge/.

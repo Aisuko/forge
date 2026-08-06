@@ -132,17 +132,17 @@ async function fetchBytes(url, onProgress) {
 /**
  * Eager, unlike the demo page's lazy load — and that is the whole design. A
  * page that reacts to reading cannot ask the reader to press something first,
- * so it pays the 43 MB up front and everything after it is a few milliseconds.
+ * so it pays the 6.7 MB up front and everything after it is a few milliseconds.
  */
 async function load() {
   el.status("starting wasm…");
   await init();
 
-  el.status("fetching weights (43 MB, cached by your browser after this)…");
+  el.status("fetching weights (6.7 MB, cached by your browser after this)…");
   el.progress(0);
   const base = "./model";
   const [bytes, config, vocab] = await Promise.all([
-    fetchBytes(`${base}/model.safetensors`, el.progress),
+    fetchBytes(`${base}/model.fzm`, el.progress),
     fetch(`${base}/config.json`).then((r) => r.text()),
     fetch(`${base}/vocab.json`).then((r) => r.text()),
   ]);

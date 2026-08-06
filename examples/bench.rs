@@ -24,6 +24,7 @@
 use std::time::Instant;
 
 use forge::backend::wgpu::Stats;
+use forge::serialization::checkpoint_in_dir;
 use forge::{AnyTokenizer, Device, Gpt2, Gpt2Config, Tokenizer as _};
 
 fn median(mut xs: Vec<f64>) -> f64 {
@@ -94,11 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::path::Path::new(&dir);
     let config =
         Gpt2Config::from_json(dir.join("config.json")).unwrap_or_else(|_| Gpt2Config::gpt2());
-    let weights = dir.join("model.safetensors");
+    let weights = checkpoint_in_dir(dir)?;
     let disk_bytes = std::fs::metadata(&weights).map(|m| m.len()).unwrap_or(0);
 
     let t0 = Instant::now();
-    let model = Gpt2::from_safetensors(&weights, config.clone(), &device)?;
+    let model = Gpt2::from_checkpoint(&weights, config.clone(), &device)?;
     let tokenizer = AnyTokenizer::from_dir(dir)?;
     let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let after_load = ctx.stats();
