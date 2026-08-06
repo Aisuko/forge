@@ -14,7 +14,11 @@ Forge is a runtime for training and running neural networks, aiming to be the ef
 
 ## Why
 
-Running a transformer usually means Python, a CUDA toolchain, and a dependency stack tied to one vendor's hardware. Forge is a single Rust crate that trains and infers on any GPU wgpu reaches — Vulkan, Metal, D3D12, and WebGPU in a browser tab — with no CUDA, no Python interpreter, and no server round trip. That's not just a portability trick. Portable and efficient is where this is going: one runtime on every device you own, down to the edge, and eventually across them — the floor a vendor-independent runtime has to stand on before it can carry real research, and eventually local, safety-focused AI work, on hardware you control end to end.
+Research keeps climbing a ladder of abstraction: in 2016, researchers implemented and trained their own models; by 2018, they were downloading pretrained weights and fine-tuning them; today, most research happens through an API call to a model nobody in the loop trained, or even opened.
+
+That climb isn't the problem by itself — every rung bought real productivity, the same way a compiler buys you freedom from hand-written assembly. But unlike a programming language or an operating system, these abstractions leak, and there is still fundamental research that requires tearing up the stack: reaching past the API, past the fine-tuning, into the model and the hardware underneath it. That kind of research needs people who understand the full stack, and understanding a stack this deep only really happens by building it. That's the premise this project runs on: understanding via building.
+
+Running a transformer usually means Python, a CUDA toolchain, and a dependency stack tied to one vendor's hardware. Forge is a single Rust crate that trains and infers on any GPU wgpu reaches — Vulkan, Metal, D3D12, and WebGPU in a browser tab — with no CUDA, no Python interpreter, and no server round trip. That's not just a portability trick: portable and efficient is where this is going — one runtime on every device you own, down to the edge, and eventually across them — the floor a vendor-independent runtime has to stand on before it can carry real research, and eventually local, safety-focused AI work, on hardware you control end to end.
 
 ## Demo
 
