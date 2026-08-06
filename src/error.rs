@@ -6,6 +6,8 @@ pub enum ForgeError {
     Io(std::io::Error),
     Json(serde_json::Error),
     SafeTensors(String),
+    /// `.fzm` quantized checkpoint read/write failure.
+    Fzm(String),
     /// Shape or dtype mismatch in a tensor operation.
     Shape(String),
     /// WebGPU runtime failure (no adapter, device request, mapping, ...).
@@ -21,6 +23,7 @@ impl fmt::Display for ForgeError {
             ForgeError::Io(e) => write!(f, "io error: {e}"),
             ForgeError::Json(e) => write!(f, "json error: {e}"),
             ForgeError::SafeTensors(m) => write!(f, "safetensors error: {m}"),
+            ForgeError::Fzm(m) => write!(f, "fzm error: {m}"),
             ForgeError::Shape(m) => write!(f, "shape error: {m}"),
             ForgeError::Wgpu(m) => write!(f, "wgpu error: {m}"),
             ForgeError::Tokenizer(m) => write!(f, "tokenizer error: {m}"),

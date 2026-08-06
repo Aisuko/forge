@@ -4,12 +4,16 @@
 //! [`crate::models::gpt2::Gpt2::from_safetensors_bytes`], which deserializes
 //! straight into the model's own parameter layout rather than materializing an
 //! intermediate `HashMap<String, Tensor>` of every tensor in the file.
+//!
+//! [`fzm`] is the quantized sibling format — see its module docs.
 
 use std::path::Path;
 
 use safetensors::tensor::{Dtype, TensorView};
 
 use crate::error::{ForgeError, Result};
+
+pub mod fzm;
 
 /// Save named f32 tensors to a .safetensors file (checkpoints).
 /// Entries: (name, shape, host data).

@@ -65,6 +65,10 @@ required-features = ["train"]
 name = "train_shakespeare"
 required-features = ["train"]
 
+[[example]]
+name = "fzm_bench"
+required-features = ["train"]
+
 [dependencies]
 bytemuck = "1"
 fancy-regex = "0.14"
