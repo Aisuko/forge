@@ -1,5 +1,6 @@
 //! GPT-2 model assembly and generation.
 
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -363,6 +364,93 @@ impl Gpt2 {
         let ln_f = LayerNorm {
             gamma: take("ln_f.weight")?,
             beta: take("ln_f.bias")?,
+            eps,
+        };
+        Ok(Gpt2 {
+            emb,
+            blocks,
+            ln_f,
+            config,
+        })
+    }
+
+    /// Load a `.fzm` q4 checkpoint. `path` is the `.fzm` file.
+    pub fn from_fzm(path: impl AsRef<Path>, config: Gpt2Config, device: &Device) -> Result<Self> {
+        let bytes = std::fs::read(path.as_ref())?;
+        Self::from_fzm_bytes(&bytes, config, device)
+    }
+
+    /// Load a `.fzm` q4 checkpoint from in-memory bytes. Every tensor is
+    /// dequantized to f32 host-side on parse (see
+    /// [`crate::serialization::fzm`]), then follows the exact same
+    /// host-\>device upload path as [`Gpt2::from_safetensors_bytes`] — there
+    /// is no packed GPU-side q4 kernel yet.
+    pub fn from_fzm_bytes(bytes: &[u8], config: Gpt2Config, device: &Device) -> Result<Self> {
+        let mut map: HashMap<String, (Vec<usize>, Vec<f32>)> =
+            crate::serialization::fzm::load_fzm_q4(bytes)?
+                .into_iter()
+                .map(|(name, shape, data)| (name, (shape, data)))
+                .collect();
+        fn host(
+            map: &mut HashMap<String, (Vec<usize>, Vec<f32>)>,
+            name: &str,
+        ) -> Result<(Vec<usize>, Vec<f32>)> {
+            map.remove(name)
+                .or_else(|| map.remove(&format!("transformer.{name}")))
+                .ok_or_else(|| ForgeError::Fzm(format!("missing tensor {name}")))
+        }
+        fn take(
+            map: &mut HashMap<String, (Vec<usize>, Vec<f32>)>,
+            name: &str,
+            device: &Device,
+        ) -> Result<Tensor> {
+            let (shape, data) = host(map, name)?;
+            Tensor::from_f32(&data, shape, device)
+        }
+        let eps = config.layer_norm_epsilon;
+        let (_, wte_host) = host(&mut map, "wte.weight")?;
+        let emb = Embedding::from_host_wte(
+            &wte_host,
+            config.vocab_size,
+            config.n_embd,
+            take(&mut map, "wpe.weight", device)?,
+            device,
+        )?;
+        drop(wte_host);
+        let mut blocks = Vec::with_capacity(config.n_layer);
+        for i in 0..config.n_layer {
+            blocks.push(Block {
+                ln_1: LayerNorm {
+                    gamma: take(&mut map, &format!("h.{i}.ln_1.weight"), device)?,
+                    beta: take(&mut map, &format!("h.{i}.ln_1.bias"), device)?,
+                    eps,
+                },
+                attn_qkv: Linear {
+                    w: take(&mut map, &format!("h.{i}.attn.c_attn.weight"), device)?,
+                    b: Some(take(&mut map, &format!("h.{i}.attn.c_attn.bias"), device)?),
+                },
+                attn_proj: Linear {
+                    w: take(&mut map, &format!("h.{i}.attn.c_proj.weight"), device)?,
+                    b: Some(take(&mut map, &format!("h.{i}.attn.c_proj.bias"), device)?),
+                },
+                ln_2: LayerNorm {
+                    gamma: take(&mut map, &format!("h.{i}.ln_2.weight"), device)?,
+                    beta: take(&mut map, &format!("h.{i}.ln_2.bias"), device)?,
+                    eps,
+                },
+                mlp_fc: Linear {
+                    w: take(&mut map, &format!("h.{i}.mlp.c_fc.weight"), device)?,
+                    b: Some(take(&mut map, &format!("h.{i}.mlp.c_fc.bias"), device)?),
+                },
+                mlp_proj: Linear {
+                    w: take(&mut map, &format!("h.{i}.mlp.c_proj.weight"), device)?,
+                    b: Some(take(&mut map, &format!("h.{i}.mlp.c_proj.bias"), device)?),
+                },
+            });
+        }
+        let ln_f = LayerNorm {
+            gamma: take(&mut map, "ln_f.weight", device)?,
+            beta: take(&mut map, "ln_f.bias", device)?,
             eps,
         };
         Ok(Gpt2 {
@@ -1075,6 +1163,27 @@ impl Gpt2 {
             entries.push((name.clone(), t.shape().dims().to_vec(), t.to_vec_f32()?));
         }
         crate::serialization::save_safetensors(path, &entries)
+    }
+
+    /// Save a checkpoint loadable by `from_fzm`, quantized to `.fzm` q4. A
+    /// chunked wte is reassembled host-side first, same as `save_safetensors`.
+    pub fn save_fzm(&self, path: impl AsRef<Path>) -> Result<()> {
+        let c = self.config.n_embd;
+        let mut wte_host = Vec::with_capacity(self.config.vocab_size * c);
+        for ch in &self.emb.wte_chunks {
+            wte_host.extend(ch.to_vec_f32()?);
+        }
+        let mut entries = vec![(
+            "wte.weight".to_string(),
+            vec![self.config.vocab_size, c],
+            wte_host,
+        )];
+        let specs = self.param_specs();
+        let params = self.params_for_save()?;
+        for ((name, _), t) in specs.iter().zip(params).skip(1) {
+            entries.push((name.clone(), t.shape().dims().to_vec(), t.to_vec_f32()?));
+        }
+        crate::serialization::fzm::save_fzm_q4(path, &entries)
     }
 
     /// Like `params` but tolerates a chunked wte (slot 0 is unused by the
