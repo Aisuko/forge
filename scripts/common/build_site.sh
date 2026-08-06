@@ -2,9 +2,9 @@
 # Compose the site into docs/dist/: the landing page and both tool pages, as
 # one artifact. This is what .github/workflows/pages.yml deploys.
 #
-#   ./scripts/build_site.sh              # full build, including both wasm bundles
-#   ./scripts/build_site.sh --no-wasm    # skip wasm; the pages will 404
-#   ./scripts/serve_web.sh               # then serve it
+#   ./scripts/common/build_site.sh              # full build, including both wasm bundles
+#   ./scripts/common/build_site.sh --no-wasm    # skip wasm; the pages will 404
+#   ./scripts/local/serve_web.sh                # then serve it
 #
 # Each page's source stays where it is owned — docs/src/ for the landing page,
 # tools/*/web/ for the tools — and is copied here, never duplicated. The core
@@ -13,7 +13,7 @@
 #
 # Everything is relative to the artifact root: the site is served from /forge/.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 DIST="docs/dist"
 WITH_WASM=1
@@ -40,12 +40,12 @@ cp -r docs/static/. "$DIST/"
 
 # The kernel inventory is generated from shaders/, so the page cannot drift
 # from the actual kernel set.
-python3 scripts/gen_kernels.py "$DIST/index.html"
+python3 scripts/common/gen_kernels.py "$DIST/index.html"
 
 if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
-  ./scripts/build_web.sh "$DIST/forge" forge-ml
-  ./scripts/build_web.sh "$DIST/forge-council" forge-council
+  ./scripts/common/build_web.sh "$DIST/forge" forge-ml
+  ./scripts/common/build_web.sh "$DIST/forge-council" forge-council
 else
   echo "warning: --no-wasm, so every page will 404 on its bundle" >&2
 fi
@@ -81,4 +81,4 @@ if [[ $WITH_WASM -eq 1 ]]; then
 else
   echo "skipping check_site.py: --no-wasm leaves the module graph unresolvable" >&2
 fi
-echo "serve: ./scripts/serve_web.sh"
+echo "serve: ./scripts/local/serve_web.sh"

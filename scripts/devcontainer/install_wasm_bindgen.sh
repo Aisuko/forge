@@ -4,10 +4,10 @@
 #
 # The CLI and the crate must be the same version or the bindings it emits will
 # not match the wasm it is reading, so the version is derived from the lockfile
-# rather than written down anywhere. scripts/build_web.sh needs this, which
-# means `make site` and the tail of `ci_local.sh fast` do too.
+# rather than written down anywhere. scripts/common/build_web.sh needs this,
+# which means `make site` and the tail of `ci_local.sh fast` do too.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 v=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
 [[ -n "$v" ]] || { echo "no wasm-bindgen in Cargo.lock" >&2; exit 1; }

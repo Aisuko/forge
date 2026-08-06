@@ -2,13 +2,13 @@
 # Promote a trained char-level checkpoint into assets/shakespeare_char/ —
 # the tracked artifact the website and TUI both load.
 #
-#   ./scripts/ship_char_model.sh [checkpoints/shakespeare_char.safetensors]
+#   ./scripts/local/ship_char_model.sh [checkpoints/shakespeare_char.safetensors]
 #
 # Unlike models/ and checkpoints/ (both gitignored), this directory is in git:
 # GitHub Pages serves the weights directly. Do NOT move it to Git LFS — Pages
 # serves LFS pointer files as text, which would silently break the demo.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 SRC="${1:-checkpoints/shakespeare_char.safetensors}"
 DEST="assets/shakespeare_char"

@@ -43,11 +43,11 @@ https://github.com/user-attachments/assets/d3487d8f-40a1-4c84-9f98-d4a7c5ce1550
 cargo run --release --example generate -- --model assets/shakespeare_char --prompt "ROMEO:"
 
 # Real GPT-2 124M weights — the parity run from tests/gpt2_e2e.rs
-./scripts/download_gpt2.sh
+./scripts/local/download_gpt2.sh
 cargo run --release --example generate -- --backend wgpu --prompt "Hello Forge!"
 
 # Train from scratch
-./scripts/download_shakespeare.sh
+./scripts/local/download_shakespeare.sh
 cargo run --release --example train_shakespeare -- --backend wgpu
 
 # Terminal model browser + run dashboard  (tools/forge-top)
@@ -76,7 +76,7 @@ forge-ml = "0.4"
 use forge::{AnyTokenizer, Device, Gpt2, Gpt2Config, Sampling};
 
 // assets/shakespeare_char ships in the repo; swap in models/gpt2 after
-// running download_gpt2.sh — AnyTokenizer picks char or BPE by what it finds.
+// running scripts/local/download_gpt2.sh — AnyTokenizer picks char or BPE by what it finds.
 let device = Device::wgpu()?; // or Device::Cpu
 let config = Gpt2Config::from_json("assets/shakespeare_char/config.json")?;
 let model = Gpt2::from_safetensors("assets/shakespeare_char/model.safetensors", config, &device)?;
@@ -119,7 +119,7 @@ cargo run --release --features train --example train_shakespeare -- --backend wg
 ```
 
 On Linux, wgpu needs a Vulkan ICD — install `mesa-vulkan-drivers` for a
-software fallback, or run [`scripts/setup_nvidia_vulkan.sh`](scripts/setup_nvidia_vulkan.sh)
+software fallback, or run [`scripts/devcontainer/setup_nvidia_vulkan.sh`](scripts/devcontainer/setup_nvidia_vulkan.sh)
 for NVIDIA inside a container. Check with `cargo run --release --example wgpu_probe`.
 
 ## Acknowledgement

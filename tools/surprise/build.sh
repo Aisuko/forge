@@ -29,7 +29,7 @@ cp "$root/tools/shared/favicon.svg" "$DIST/"
 
 if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
-  ./scripts/build_web.sh "$DIST/forge"
+  ./scripts/common/build_web.sh "$DIST/forge"
 else
   echo "warning: --no-wasm, so the page will 404 on ./forge/forge.js" >&2
 fi
