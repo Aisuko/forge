@@ -108,16 +108,23 @@ fi
 # score_model <label> <model-dir-or-checkpoint>
 #
 # Appends "label<TAB>val<TAB>train<TAB>word<TAB>copy32<TAB>maxcopy<TAB>score<TAB>verdict"
-# to $SCORES. Accepts either a directory holding model.safetensors (what
-# assets/ and the ship script use) or a bare .safetensors path with its
-# sidecars beside it (what training writes).
+# to $SCORES. Accepts either a directory holding model.fzm or model.safetensors
+# (what assets/ and the ship script use — assets/ ships q4 now, so this is the
+# score of the quantized file the site serves) or a bare .safetensors path with
+# its sidecars beside it (what training writes).
 score_model() {
   local label="$1" path="$2" dir ckpt tmp
   tmp="$(mktemp -d)"
   if [[ -d "$path" ]]; then
     dir="$path"
-    ckpt="$tmp/probe.safetensors"
-    cp "$dir/model.safetensors" "$ckpt"
+    local src=""
+    for cand in "$dir/model.fzm" "$dir/model.safetensors"; do
+      [[ -f "$cand" ]] && { src="$cand"; break; }
+    done
+    [[ -n "$src" ]] || { echo "  skip $label: no model.fzm or model.safetensors" >&2
+                         rm -rf "$tmp"; return 1; }
+    ckpt="$tmp/probe.${src##*.}"
+    cp "$src" "$ckpt"
     cp "$dir/config.json" "$tmp/probe.config.json"
     cp "$dir/vocab.json" "$tmp/probe.vocab.json"
   else

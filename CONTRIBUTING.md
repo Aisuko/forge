@@ -48,7 +48,7 @@ src/
   autograd/           reverse-mode autodiff over the op graph
   optim/              optimizer(s) (AdamW)
   tokenizer/          byte-level BPE (vocab.json + merges.txt)
-  serialization/      safetensors checkpoint loading/saving
+  serialization/      checkpoint I/O — safetensors, and .fzm q4 (fzm.rs)
   wasm.rs             wasm32 bindings — the browser is a runtime target
 
 shaders/              WGSL compute kernels, one file per op (matmul.wgsl,
@@ -241,7 +241,7 @@ make site-verify   # build it, then drive all three pages on a real GPU
 
 `scripts/common/build_site.sh` composes `docs/dist/` from the landing page in
 `docs/src/` and both tool pages in `tools/*/web/`, sharing one core wasm bundle
-and one copy of the 43 MB checkpoint. It is what `.github/workflows/pages.yml`
+and one copy of the 6.7 MB checkpoint. It is what `.github/workflows/pages.yml`
 deploys, and it runs in the `fast` gate, so a page that names a moved asset
 fails at commit time.
 

@@ -301,7 +301,7 @@ function wire() {
   let stop = false;
   let weightBytes = 0;
 
-  /** Fetch with a progress callback — 43 MB deserves a bar. */
+  /** Fetch with a progress callback — even 6.7 MB deserves a bar. */
   async function fetchBytes(url, onProgress) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
@@ -325,17 +325,17 @@ function wire() {
     return out;
   }
 
-  // Lazy by design: a visitor reading the explainer must not pay 43 MB. The
-  // fetch starts on the first Run, not on page load.
+  // Lazy by design: a visitor reading the explainer must not pay for weights
+  // they never run. The fetch starts on the first Run, not on page load.
   async function load() {
     const { default: init, WasmGpt2 } = await import("./forge/forge.js");
     await init();
 
-    status("fetching weights (43 MB, cached by your browser after this)…");
+    status("fetching weights (6.7 MB, cached by your browser after this)…");
     progress(0);
     const base = "./model";
     const [bytes, config, vocab] = await Promise.all([
-      fetchBytes(`${base}/model.safetensors`, progress),
+      fetchBytes(`${base}/model.fzm`, progress),
       fetch(`${base}/config.json`).then((r) => r.text()),
       fetch(`${base}/vocab.json`).then((r) => r.text()),
     ]);

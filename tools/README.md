@@ -60,7 +60,7 @@ Each web tool builds a self-contained artifact into its own gitignored `dist/`:
 The deployed site at [aisuko.github.io/forge](https://aisuko.github.io/forge/)
 is a different artifact: `scripts/common/build_site.sh` composes the landing page in
 `docs/src/` with both pages here, sharing one core wasm bundle and one copy of
-the 43 MB checkpoint. The page source is not copied into `docs/` to do it —
+the 6.7 MB checkpoint. The page source is not copied into `docs/` to do it —
 `web/` here stays the only definition of each page.
 
 A standalone `dist/` therefore has nav links to pages it does not ship, and

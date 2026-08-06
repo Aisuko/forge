@@ -87,10 +87,11 @@ pub struct WasmCouncil {
 
 #[wasm_bindgen]
 impl WasmCouncil {
-    /// `experts` is an array of `Uint8Array` safetensors blobs and `names` the
-    /// matching array of display strings. All experts share one `config.json`
-    /// and one `vocab.json` — if they needed their own, they would not be
-    /// mergeable in the first place.
+    /// `experts` is an array of `Uint8Array` checkpoint blobs (`.safetensors`
+    /// or `.fzm`, detected per-blob) and `names` the matching array of
+    /// display strings. All experts share one `config.json` and one
+    /// `vocab.json` — if they needed their own, they would not be mergeable
+    /// in the first place.
     pub async fn load(
         experts: js_sys::Array,
         names: js_sys::Array,
@@ -106,7 +107,7 @@ impl WasmCouncil {
         for v in experts.iter() {
             let bytes = js_sys::Uint8Array::new(&v).to_vec();
             models.push(
-                Gpt2::from_safetensors_bytes(&bytes, config.clone(), &device).map_err(js_err)?,
+                Gpt2::from_checkpoint_bytes(&bytes, config.clone(), &device).map_err(js_err)?,
             );
         }
         let names: Vec<String> = names.iter().filter_map(|v| v.as_string()).collect();

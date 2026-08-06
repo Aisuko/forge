@@ -53,7 +53,7 @@ fn draw_models(frame: &mut Frame, app: &mut AppState, area: Rect) {
             format!("scanning {}…", app.roots_display())
         } else {
             format!(
-                "no *.safetensors found under {}\n\npass --path <dir> to search elsewhere",
+                "no *.safetensors or *.fzm found under {}\n\npass --path <dir> to search elsewhere",
                 app.roots_display()
             )
         };

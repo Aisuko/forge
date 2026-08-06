@@ -1,8 +1,9 @@
 {
-  "val_loss": 1.4542,
-  "train_loss": 1.0282,
+  "val_loss": 1.4592,
+  "train_loss": 1.0340,
   "val_windows": 512,
-  "measured": "2026-07-30",
+  "measured": "2026-08-06",
+  "format": "fzm-q4",
   "source": "checkpoints/campaign/drop30wd20/m.best.safetensors",
   "reference": "nanoGPT train_shakespeare_char, val 1.4697"
 }

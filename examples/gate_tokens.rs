@@ -13,6 +13,7 @@
 //!     [--prompt "..."] [--tokens N]
 //! ```
 
+use forge::serialization::checkpoint_in_dir;
 use forge::{AnyTokenizer, Device, Gpt2, Gpt2Config, Tokenizer as _};
 
 const OUT: &str = "tests/data/gate_expected.json";
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::path::Path::new(&model_dir);
     let config =
         Gpt2Config::from_json(dir.join("config.json")).unwrap_or_else(|_| Gpt2Config::gpt2());
-    let model = Gpt2::from_safetensors(dir.join("model.safetensors"), config, &device)?;
+    let model = Gpt2::from_checkpoint(checkpoint_in_dir(dir)?, config, &device)?;
     let tokenizer = AnyTokenizer::from_dir(dir)?;
     // A 65-character vocabulary cannot encode a prompt about lighthouses.
     let prompt = get("--prompt").unwrap_or_else(|| match tokenizer.kind() {

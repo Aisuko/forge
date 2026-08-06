@@ -4,6 +4,46 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`.fzm`, a hand-rolled q4 checkpoint format** (`src/serialization/fzm.rs`):
+  flat, magic-prefixed, per-group affine 4-bit with `GROUP_SIZE = 64`. No GGUF
+  and no candle bindings — the same rule the kernels follow. `save_fzm_q4` /
+  `load_fzm_q4` at the host f32 boundary, plus `read_fzm_header` for listing a
+  checkpoint without dequantizing it.
+- `Gpt2::from_checkpoint` / `from_checkpoint_bytes` pick the codec by sniffing
+  the leading bytes, not the extension, so the wasm bindings take either format
+  and the JS never learns which. `Gpt2::save_checkpoint` is the write-side
+  counterpart, dispatching on the extension.
+  `forge::serialization::checkpoint_in_dir` resolves a model directory to
+  whichever of `model.fzm` / `model.safetensors` is there.
+- `examples/to_fzm.rs` — the one-shot converter both ship scripts now call.
+
+### Changed
+
+- **Every shipped checkpoint is `.fzm` q4.** `assets/shakespeare_char/` is
+  6.7 MB instead of 43 MB, and each of the four council experts 0.51 MB instead
+  of 3.3 MB. The composed site is 13.5 MB, down from 61 MB. Held-out loss on the
+  char model, measured on the quantized file the site actually serves: val
+  1.4592 against 1.4542 for the f32 original (+0.0050, 0.3% relative), train
+  1.0340 against 1.0282. The council's experts still share a byte-identical
+  `wte` after quantization, which is what makes the merge meaningful.
+- Dequant happens on load: the weights reach the GPU as f32 and every kernel is
+  untouched. The saving is download size and repo size, not VRAM — a packed q4
+  WGSL matmul is a separate, later step.
+- Training still writes f32 safetensors. Quantization is a shipping step, so
+  `ship_char_model.sh` and `ship_council.sh` convert on the way into the tracked
+  asset directories, and `ship_char_model.sh` measures the loss it records
+  against the `.fzm` file rather than its f32 source.
+- `tests/data/gate_expected.json` regenerated: greedy decoding diverges from the
+  f32 model after ~24 tokens, so the browser gate is now the q4 reference. It
+  passes — browser and native WGPU agree token-for-token on the quantized
+  weights.
+- `forge-top` discovers and runs `.fzm` as well as `.safetensors`, reading only
+  the header for the listing.
+
 ## [0.4.0] — 2026-08-02
 
 The site, which 0.3.0 deferred, and the test-suite hang, diagnosed. No breaking

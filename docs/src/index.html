@@ -199,8 +199,9 @@
                     Every number here is produced by
                     <span class="font-mono">shakespeare-char</span>, a 10.77M
                     parameter model trained from scratch with Forge. Start it and
-                    the numbers arrive one character at a time — 43 MB of
-                    weights, fetched once and then cached by your browser.
+                    the numbers arrive one character at a time — 6.7 MB of
+                    q4-quantized weights, fetched once and then cached by your
+                    browser.
                   </p>
                   <button id="stage-idle-run" class="btn-primary mt-4" type="button">
                     Run the model
@@ -349,7 +350,7 @@
                       role="status"
                       aria-live="polite"
                     >
-                      Weights (43 MB) are fetched only when you press Run, then
+                      Weights (6.7 MB) are fetched only when you press Run, then
                       cached by your browser.
                     </p>
 
@@ -654,8 +655,9 @@ cargo run --release --example train_shakespeare -- \
             <div class="card">
               <h3 class="font-semibold">What comes out</h3>
               <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                A safetensors checkpoint and its vocabulary, byte-identical in
-                layout to the one this page loads. Point
+                A safetensors checkpoint and its vocabulary. Quantize it to
+                the <code class="font-mono">.fzm</code> q4 file this page loads
+                with <code class="font-mono">--example to_fzm</code>, or point
                 <code class="font-mono">--model</code> at it and the demo above
                 runs your weights instead — the forward pass, the KV cache and
                 the trace do not know the difference.
@@ -679,7 +681,7 @@ cargo run --release --example train_shakespeare -- \
                 </button>
               </div>
               <div class="scroll-x mt-3">
-                <pre id="cmd-generate" class="font-mono text-xs leading-relaxed"># the 43 MB char model is in the repo
+                <pre id="cmd-generate" class="font-mono text-xs leading-relaxed"># the 6.7 MB char model is in the repo
 cargo run --release --example generate -- \
   --model assets/shakespeare_char --prompt "ROMEO:"</pre>
               </div>

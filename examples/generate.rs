@@ -5,14 +5,15 @@
 //!       [--model DIR] [--backend cpu|wgpu] [--prompt "..."] \
 //!       [--tokens N] [--topk K] [--temp T]
 //!
-//! `--model` is a directory holding `model.safetensors`, `config.json`, and
-//! `vocab.json` (plus `merges.txt` for a BPE model). It defaults to
-//! `models/gpt2/` — see scripts/download_gpt2.sh. The 43 MB character-level
-//! Shakespeare model ships in the repo:
+//! `--model` is a directory holding `model.fzm` or `model.safetensors`,
+//! `config.json`, and `vocab.json` (plus `merges.txt` for a BPE model). It
+//! defaults to `models/gpt2/` — see scripts/download_gpt2.sh. The 6.7 MB
+//! character-level Shakespeare model ships in the repo:
 //!
 //!   cargo run --release --example generate -- \
 //!       --model assets/shakespeare_char --prompt "ROMEO:"
 
+use forge::serialization::checkpoint_in_dir;
 use forge::{AnyTokenizer, Device, Gpt2, Gpt2Config, Sampling, Tokenizer as _};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config =
         Gpt2Config::from_json(dir.join("config.json")).unwrap_or_else(|_| Gpt2Config::gpt2());
     let start = std::time::Instant::now();
-    let model = Gpt2::from_safetensors(dir.join("model.safetensors"), config, &device)?;
+    let model = Gpt2::from_checkpoint(checkpoint_in_dir(dir)?, config, &device)?;
     // Picks BPE or char by which sidecar files are present.
     let tokenizer = AnyTokenizer::from_dir(dir)?;
     println!(
