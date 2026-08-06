@@ -34,7 +34,6 @@
         <ul class="hidden gap-5 text-sm text-ink-500 sm:flex dark:text-ink-300">
           <li><a class="hover:text-forge-600" href="#demo">Watch it think</a></li>
           <li><a class="hover:text-forge-600" href="#efficiency">Efficiency</a></li>
-          <li><a class="hover:text-forge-600" href="#why">Why</a></li>
           <li><a class="hover:text-forge-600" href="#kernels">Kernels</a></li>
           <li><a class="hover:text-forge-600" href="#quickstart">Quick start</a></li>
           <li><a class="hover:text-forge-600" href="./council.html">The council</a></li>
@@ -52,7 +51,7 @@
     <main id="main">
       <!-- ── Hero ────────────────────────────────────────────────────── -->
       <header id="top" class="wrap py-16 sm:py-24">
-        <p class="chip">Rust · WebGPU · no CUDA, no Python</p>
+        <p class="chip">Accuracy = Efficiency × Resources</p>
         <!-- Through v7 the page opened by asking how little it takes to run a
              language model. That sells the demo, not the project: the small
              model is a consequence of the goal, not the goal. The goal is the
@@ -61,25 +60,40 @@
           The most efficient, portable runtime for
           <span class="text-forge-600">neural networks</span>.
         </h1>
+        <!-- The motivation, not just the mechanism: research has climbed a
+             ladder of abstraction — train your own model (2016), fine-tune a
+             downloaded one (2018), prompt an API you've never opened
+             (today) — and unlike a compiler's, these abstractions leak.
+             Real understanding, the kind fundamental research needs, still
+             means being able to reach the whole way down the stack. -->
         <p class="lede text-lg">
-          One Rust crate and one set of WGSL kernels — no CUDA toolchain, no
-          Python interpreter, no vendor to be locked to. The same code trains and runs
-          models on every GPU <code class="font-mono">wgpu</code> reaches, from
-          a workstation to a browser tab to the edge devices you own end to end.
+          Research keeps climbing a ladder of abstraction: training your own
+          model, then fine-tuning a downloaded one, then prompting an API you
+          never open. Each step buys productivity, but unlike a programming
+          language or an operating system, these abstractions leak — and
+          there is still research that needs the whole stack, not just the
+          top of it.
         </p>
-        <!-- Stated as a direction, deliberately: splitting one job across
-             several devices is excluded from Roadmap V4, and the rest of this
-             page only prints numbers it measured. -->
         <p class="lede text-lg">
-          Portable and efficient is where this is going: one runtime on every
-          device you own, and eventually across them. Scroll down and it will
-          run on yours, and tell you how fast.
+          Forge exists on the premise that understanding this technology
+          comes from building it. One Rust crate, one set of WGSL kernels, no
+          CUDA toolchain and no Python interpreter between you and the model
+          trains and runs on every GPU <code class="font-mono">wgpu</code>
+          reaches, from a workstation to a browser tab to the edge devices
+          you own end to end. Scroll down and it will run on yours, and tell
+          you how fast.
         </p>
         <div class="mt-8 flex flex-wrap gap-3">
           <a class="btn-primary" href="#demo">Watch it think</a>
-          <a class="btn-ghost" href="#quickstart">Quick start</a>
-          <a class="btn-ghost" href="https://github.com/Aisuko/forge" rel="noopener"
-            >Source</a
+          <a
+            class="btn-ghost border-sky-300 text-sky-700 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950"
+            href="./council.html"
+            >The council</a
+          >
+          <a
+            class="btn-ghost border-violet-300 text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-950"
+            href="./react.html"
+            >Surprise</a
           >
         </div>
 
@@ -106,12 +120,6 @@
             <!-- The section's claim, stated. Through v6 this heading was
                  followed straight by a 246 x 246 grid, which is an answer to a
                  question the visitor had not been asked yet. -->
-            <p class="lede">
-              It writes one character at a time. Each one is a choice among 65,
-              and to make it the model reads the characters already there. Both
-              halves of that are below, as they happen: the shortlist it chose
-              from, and the places it looked to build it.
-            </p>
           </div>
 
           <div class="wrap mt-8 grid items-start gap-5 lg:grid-cols-5">
@@ -441,12 +449,6 @@
             is produced by your own hardware, so none of it can go stale.
           </p>
 
-          <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
-            What is <em>not</em> in that budget is as much the point: no CUDA
-            toolkit, no Python interpreter, no PyTorch, no ONNX runtime, and no
-            server round trip. The cost of a token here is the cost of the
-            arithmetic plus one WebGPU dispatch queue.
-          </p>
         </div>
       </section>
 
@@ -492,57 +494,6 @@
                 </tr>
               </tbody>
             </table>
-          </div>
-
-          <p class="mt-5 max-w-3xl text-sm text-ink-500 dark:text-ink-300">
-            The wasm build is the library with a
-            <code class="font-mono">wasm-bindgen</code> facade over the async
-            inference API — not a port. The only native-only dependencies
-            (<code class="font-mono">rayon</code>,
-            <code class="font-mono">pollster</code>) are behind target gates,
-            and the crate has no optional dependency at all: everything built
-            <em>with</em> the runtime, including the two pages linked above,
-            is a separate crate in
-            <code class="font-mono">tools/</code>. That is why this page needs
-            no cross-origin isolation headers and ships as static files.
-          </p>
-        </div>
-      </section>
-
-      <!-- ── Why ─────────────────────────────────────────────────────── -->
-      <section id="why" class="section">
-        <div class="wrap">
-          <h2 class="h2">Why Forge is built this way</h2>
-          <p class="lede">Three decisions, and what each one buys.</p>
-
-          <div class="mt-8 grid gap-5 md:grid-cols-3">
-            <div class="card">
-              <h3 class="font-semibold">Rust, not Python</h3>
-              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                Explicit memory and dispatch, no interpreter in the loop, and
-                one binary to run. Training and inference are the same code on
-                the same tensors, so there is no second implementation to keep
-                honest.
-              </p>
-            </div>
-            <div class="card">
-              <h3 class="font-semibold">WebGPU, not CUDA</h3>
-              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                One set of WGSL kernels reaches every target above through
-                <a class="text-forge-600 hover:underline" href="https://github.com/gfx-rs/wgpu" rel="noopener">wgpu</a>,
-                with no vendor toolchain to install — and no vendor to be
-                locked to.
-              </p>
-            </div>
-            <div class="card">
-              <h3 class="font-semibold">A CPU reference backend</h3>
-              <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-                Every kernel has a mathematically identical plain-Rust twin to
-                check against. That is what makes the parity numbers mean
-                something — and what makes the thing teachable, since the
-                reference and the kernel can be read side by side.
-              </p>
-            </div>
           </div>
         </div>
       </section>
@@ -683,12 +634,6 @@
       <section id="train" class="section">
         <div class="wrap">
           <h2 class="h2">Train it yourself</h2>
-          <p class="lede">
-            The model in the section above is not a download — it is what this
-            command produces. Training and inference are the same code on the
-            same tensors, so there is no separate training stack to install and
-            nothing that only exists at train time.
-          </p>
 
           <div class="mt-8 grid gap-5 md:grid-cols-2">
             <div class="card">
@@ -724,11 +669,6 @@ cargo run --release --example train_shakespeare -- \
       <section id="quickstart" class="section">
         <div class="wrap">
           <h2 class="h2">Quick start</h2>
-          <p class="lede">
-            Rust edition 2024 and a Vulkan, Metal, or D3D12 driver. No Python,
-            no CUDA toolkit. The first command needs no download either — the
-            model from the demo above is in the repository.
-          </p>
 
           <div class="mt-8 grid gap-5 md:grid-cols-2">
             <div class="card">
