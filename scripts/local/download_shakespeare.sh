@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the Tiny Shakespeare corpus (~1.1 MB) — the training tests and examples.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 mkdir -p data
 if [ -s data/tinyshakespeare.txt ]; then
     echo "data/tinyshakespeare.txt already present"

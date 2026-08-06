@@ -6,7 +6,7 @@
 # It re-runs the pre-commit checks on purpose: a push can carry commits made
 # with --no-verify, or fetched from another machine.
 #
-# Installed by scripts/install_hooks.sh. Bypass with `git push --no-verify`.
+# Installed by scripts/common/install_hooks.sh. Bypass with `git push --no-verify`.
 set -euo pipefail
 
 # git feeds one "<local ref> <local sha> <remote ref> <remote sha>" line per
@@ -24,4 +24,4 @@ if [[ "$refs" -gt 0 && "$updates" -eq 0 ]]; then
   exit 0
 fi
 
-exec ./scripts/ci_local.sh full
+exec ./scripts/local/ci_local.sh full

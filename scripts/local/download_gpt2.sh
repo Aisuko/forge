@@ -3,7 +3,7 @@
 # into models/gpt2/. Reads HF_TOKEN from .env if present (gpt2 is public, so
 # the token is optional).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 if [ -f .env ]; then
   set -a; source .env; set +a

@@ -11,7 +11,7 @@ This is deliberately not in GitHub Actions: hosted runners have no GPU, so
 `navigator.gpu.requestAdapter()` returns null and every page below fails for a
 reason no code change can fix. It belongs where the GPU is.
 
-    ./scripts/build_site.sh && python3 scripts/check_pages.py    # or: make site-verify
+    ./scripts/common/build_site.sh && python3 scripts/local/check_pages.py    # or: make site-verify
 
 Screenshots land in target/site-check/. Requires `pip install playwright` and
 `playwright install chromium`.
@@ -26,7 +26,7 @@ import threading
 
 from playwright.sync_api import sync_playwright
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
 # Chromium ships WebGPU behind these on Linux; without them requestAdapter()
 # returns null and every check below fails for the wrong reason.
@@ -46,7 +46,7 @@ ap.add_argument("--headed", action="store_true")
 args = ap.parse_args()
 
 if not (args.dist / "index.html").exists():
-    sys.exit(f"{args.dist} is not a built site — run ./scripts/build_site.sh")
+    sys.exit(f"{args.dist} is not a built site — run ./scripts/common/build_site.sh")
 
 shots = ROOT / "target/site-check"
 shots.mkdir(parents=True, exist_ok=True)

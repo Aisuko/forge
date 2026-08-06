@@ -30,7 +30,7 @@ cp "$root/tools/shared/favicon.svg" "$DIST/"
 if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
   # forge-council/, not forge/: in the composed site forge/ is the core bundle.
-  ./scripts/build_web.sh "$DIST/forge-council" forge-council
+  ./scripts/common/build_web.sh "$DIST/forge-council" forge-council
 else
   echo "warning: --no-wasm, so the page will 404 on ./forge-council/forge_council.js" >&2
 fi

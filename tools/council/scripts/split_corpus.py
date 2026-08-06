@@ -30,7 +30,7 @@ SPEAKER = re.compile(r"^([A-Z][A-Za-z ]*):$", re.M)
 
 def main() -> int:
     if not CORPUS.exists():
-        print(f"missing {CORPUS} — run scripts/download_shakespeare.sh", file=sys.stderr)
+        print(f"missing {CORPUS} — run scripts/local/download_shakespeare.sh", file=sys.stderr)
         return 1
     text = CORPUS.read_text()
     n = len(text)

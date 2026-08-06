@@ -76,25 +76,25 @@ add a new op, add it to both backends and add a parity case.
 ```bash
 # One-time: activate the local CI hooks (see "The local CI gate" below).
 # Already run for you in the devcontainer.
-./scripts/install_hooks.sh
+./scripts/common/install_hooks.sh
 
 # Fetch GPT-2 124M weights + tokenizer into models/gpt2/
 # (reads HF_TOKEN from .env if set; gpt2 is public so this is optional)
-./scripts/download_gpt2.sh
+./scripts/local/download_gpt2.sh
 
 # Fetch the Tiny Shakespeare corpus into data/ (used by training tests/examples)
-./scripts/download_shakespeare.sh
+./scripts/local/download_shakespeare.sh
 ```
 
 On Linux, the WGPU backend needs a working Vulkan ICD. See
-`.devcontainer/devcontainer.json` and `scripts/setup_nvidia_vulkan.sh` if
+`.devcontainer/devcontainer.json` and `scripts/devcontainer/setup_nvidia_vulkan.sh` if
 you're running in a container with an NVIDIA GPU and `wgpu::Device`
 initialization fails to find a hardware adapter (falls back to software
 rendering via Mesa's llvmpipe otherwise, which works but is slow).
 
 ### Vulkan in the devcontainer
 
-`scripts/setup_nvidia_vulkan.sh` fixes three separate causes of the same
+`scripts/devcontainer/setup_nvidia_vulkan.sh` fixes three separate causes of the same
 `Found no drivers!` message on driver 580.x with an RTX A5000. Each was
 diagnosed independently; any one of them alone produces that error, so fixing
 only the obvious one leaves the symptom unchanged.
@@ -129,7 +129,7 @@ Verification runs on your machine, in git hooks, rather than on GitHub. The
 only remaining workflow that runs automatically is the Pages deploy
 (`.github/workflows/pages.yml`); `.github/workflows/ci.yml` is dispatch-only,
 kept for pull requests from forks where nobody's hooks ran, and it invokes
-`scripts/ci_local.sh fast` rather than restating the stages. The release
+`scripts/local/ci_local.sh fast` rather than restating the stages. The release
 workflow checks only what the local gate cannot: the tag matching the manifest,
 the docs.rs render, and the `cargo package` tarball.
 
@@ -140,7 +140,7 @@ software Vulkan driver, and they don't have the gitignored 548 MB
 GPT-2 numerics against HF `transformers` — were skipped entirely. The pre-push
 hook runs both, on real hardware.
 
-`scripts/ci_local.sh` is the single source of truth for what "green" means,
+`scripts/local/ci_local.sh` is the single source of truth for what "green" means,
 and both hooks are thin wrappers around it:
 
 | stage | checks | cost (warm `target/`) | hook |
@@ -152,8 +152,8 @@ Stages are ordered cheapest-first and stop at the first failure, so a
 formatting slip doesn't cost you a minute of GPU tests. Run either by hand:
 
 ```bash
-./scripts/ci_local.sh fast
-./scripts/ci_local.sh full
+./scripts/local/ci_local.sh fast
+./scripts/local/ci_local.sh full
 ```
 
 `full` deliberately repeats the `fast` checks — a push can carry commits made
@@ -162,7 +162,7 @@ with `--no-verify`, or fetched from another machine.
 Two things worth knowing:
 
 - **Activation is per clone.** git ignores `.githooks/` until
-  `core.hooksPath` points at it, which is what `./scripts/install_hooks.sh`
+  `core.hooksPath` points at it, which is what `./scripts/common/install_hooks.sh`
   does. Undo with `git config --unset core.hooksPath`.
 - **`pre-commit` checks the working tree, not the index.** With a partially
   staged change it verifies a different state than the one being committed,
@@ -196,7 +196,7 @@ What each test file checks:
 - `tests/gpt2_e2e.rs` — CPU vs. WGPU last-position logits (≤ 5e-3 abs),
   identical greedy continuations on both backends, and (when
   `tests/data/hf_golden.json` exists) a golden check against HF
-  `transformers` — regenerate that golden file with `scripts/make_golden.py`
+  `transformers` — regenerate that golden file with `scripts/local/make_golden.py`
   (requires `models/gpt2/`; skipped when absent)
 - `tests/kv_cache.rs` — KV-cache decode is token-identical to the no-cache
   path for ≥ 64 generated tokens, on both backends (requires `models/gpt2/`)
@@ -239,13 +239,13 @@ make site          # build the whole site and serve it on :8080
 make site-verify   # build it, then drive all three pages on a real GPU
 ```
 
-`scripts/build_site.sh` composes `docs/dist/` from the landing page in
+`scripts/common/build_site.sh` composes `docs/dist/` from the landing page in
 `docs/src/` and both tool pages in `tools/*/web/`, sharing one core wasm bundle
 and one copy of the 43 MB checkpoint. It is what `.github/workflows/pages.yml`
 deploys, and it runs in the `fast` gate, so a page that names a moved asset
 fails at commit time.
 
-`make site-verify` (`scripts/check_pages.py`) is the check that matters:
+`make site-verify` (`scripts/local/check_pages.py`) is the check that matters:
 `check_site.py` proves the artifact resolves, but a page that builds and then
 fails inside `WasmGpt2.load` looks identical over HTTP. It drives each page in
 headless Chromium with WebGPU — press Run, wait for output, assert on the DOM —
@@ -270,7 +270,7 @@ would be errors.
 1. If you add or modify an op: implement it in `backend/cpu.rs`, add/update
    the matching WGSL kernel in `shaders/`, wire it through `ops.rs`, and add
    a parity case in `tests/op_parity.rs`.
-2. Run `./scripts/ci_local.sh full` (or just let the `pre-push` hook do it)
+2. Run `./scripts/local/ci_local.sh full` (or just let the `pre-push` hook do it)
    and, if relevant, the manual CPU/WGPU generation comparison above.
 3. Keep changes scoped to what GPT-2 needs — this project deliberately
    avoids generality for its own sake.

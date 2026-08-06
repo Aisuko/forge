@@ -27,19 +27,19 @@
 		"--device-cgroup-rule=c 195:* rmw",
 		"--device=/dev/dri"
 	],
-	// Vulkan loader + software fallback; scripts/setup_nvidia_vulkan.sh adds
-	// the NVIDIA ICD manifest, the GLVND EGL vendor manifest, the modeset
+	// Vulkan loader + software fallback; scripts/devcontainer/setup_nvidia_vulkan.sh
+	// adds the NVIDIA ICD manifest, the GLVND EGL vendor manifest, the modeset
 	// node, and fixes /dev/dri permissions. chromium is the WebGPU browser
 	// `make site-verify` drives headlessly.
 	// install_hooks.sh points core.hooksPath at .githooks/ — the local CI gate
-	// (see scripts/ci_local.sh). git does not wire that up per clone on its own.
+	// (see scripts/local/ci_local.sh). git does not wire that up per clone on its own.
 	// install_wasm_bindgen.sh pins the CLI to the wasm-bindgen in Cargo.lock,
 	// which the site build (and so the tail of that gate) needs.
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 chromium && bash scripts/install_hooks.sh && bash scripts/install_wasm_bindgen.sh; bash scripts/setup_nvidia_vulkan.sh || true",
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 chromium && bash scripts/common/install_hooks.sh && bash scripts/devcontainer/install_wasm_bindgen.sh; bash scripts/devcontainer/setup_nvidia_vulkan.sh || true",
 	// /dev/dri is re-mounted with the host's restrictive perms on every
 	// container start (not just creation), so the DAC/GLVND fixes need to
 	// re-run on every start too, not only once via postCreateCommand.
-	"postStartCommand": "bash scripts/setup_nvidia_vulkan.sh || true",
+	"postStartCommand": "bash scripts/devcontainer/setup_nvidia_vulkan.sh || true",
 	"containerEnv": {
 		"NVIDIA_VISIBLE_DEVICES": "all",
 		// "graphics" is required for the NVIDIA Vulkan ICD, which wgpu needs on Linux

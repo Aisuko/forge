@@ -3,8 +3,8 @@
 # and .github/workflows/ci.yml are thin wrappers around it, so nothing can
 # drift from it.
 #
-#   ./scripts/ci_local.sh fast   # fmt, clippy, builds, dep assert, the site
-#   ./scripts/ci_local.sh full   # everything in fast, plus the release tests
+#   ./scripts/local/ci_local.sh fast   # fmt, clippy, builds, dep assert, the site
+#   ./scripts/local/ci_local.sh full   # everything in fast, plus the release tests
 #
 # `fast` runs on pre-commit (~7s warm), `full` on pre-push (~1m10s). Every
 # optional feature and every tool gets its own run: one nobody builds rots.
@@ -12,7 +12,7 @@
 # Cheapest first, stopping at the first failure, so a formatting slip does not
 # cost a minute of GPU tests.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 STAGE="${1:-fast}"
 case "$STAGE" in
@@ -71,14 +71,14 @@ run "no TUI deps in forge-ml"      assert_no_tui_deps
 # ~0.5s: both wasm crates are already built above, so this is wasm-bindgen,
 # Tailwind and the copies. It catches a page naming an asset that moved, which
 # nothing else here would see. Whether the pages *run* is `make site-verify`.
-run "build site"                   ./scripts/build_site.sh
+run "build site"                   ./scripts/common/build_site.sh
 
 if [[ "$STAGE" == full ]]; then
   # gpt2_e2e, kv_cache and the BPE cases self-skip without models/gpt2/, which
   # makes a green run quietly weaker than it looks. Say so.
   if [[ ! -f models/gpt2/model.safetensors ]]; then
     printf '%snote: models/gpt2/ missing — gpt2_e2e and kv_cache will self-skip%s\n' "$DIM" "$OFF"
-    printf '%s      run ./scripts/download_gpt2.sh for full coverage%s\n' "$DIM" "$OFF"
+    printf '%s      run ./scripts/local/download_gpt2.sh for full coverage%s\n' "$DIM" "$OFF"
   fi
   # `train` adds autograd/training/train_ops; cargo skips them without it.
   run "cargo test --release"       cargo test -p forge-ml --release --locked --features train

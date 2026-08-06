@@ -2,10 +2,10 @@
 # Train the character-level Shakespeare model, evaluate it, and tell you
 # whether it is worth shipping — in one command.
 #
-#   ./scripts/train_char.sh                 # the full campaign (~10 h on an A5000)
-#   ./scripts/train_char.sh --baseline-only # score what already exists (~4 min)
-#   ./scripts/train_char.sh --quick         # 600-step smoke test of the whole flow
-#   ./scripts/train_char.sh --report        # re-render the report, no training
+#   ./scripts/local/train_char.sh                 # the full campaign (~10 h on an A5000)
+#   ./scripts/local/train_char.sh --baseline-only # score what already exists (~4 min)
+#   ./scripts/local/train_char.sh --quick         # 600-step smoke test of the whole flow
+#   ./scripts/local/train_char.sh --report        # re-render the report, no training
 #
 # What it does, in order:
 #   0. scores every checkpoint you already have, including the one the website
@@ -24,7 +24,7 @@
 # the one the site serves scores 1.73 against the 1.47 of a checkpoint that was
 # sitting unshipped next to it.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 # ── knobs ────────────────────────────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ say() { printf '%s%s%s\n' "$B" "$*" "$O"; }
 # ── setup ────────────────────────────────────────────────────────────────────
 
 [[ -f data/tinyshakespeare.txt ]] || {
-  echo "data/tinyshakespeare.txt missing — run ./scripts/download_shakespeare.sh" >&2
+  echo "data/tinyshakespeare.txt missing — run ./scripts/local/download_shakespeare.sh" >&2
   exit 1
 }
 mkdir -p "$OUT"
@@ -168,7 +168,7 @@ score_model() {
   done
 
   local metrics
-  metrics=$(python3 scripts/score_text.py data/tinyshakespeare.txt "$tmp/samples.txt") || {
+  metrics=$(python3 scripts/local/score_text.py data/tinyshakespeare.txt "$tmp/samples.txt") || {
     echo "  skip $label: scoring failed" >&2; rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
 
@@ -303,7 +303,7 @@ else:
         "Ship it:",
         "",
         "```bash",
-        f"./scripts/ship_char_model.sh {path}",
+        f"./scripts/local/ship_char_model.sh {path}",
         "cargo run --release --example gate_tokens -- --model assets/shakespeare_char",
         "```",
         "",

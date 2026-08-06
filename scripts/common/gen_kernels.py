@@ -11,7 +11,7 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 SHADERS = ROOT / "shaders"
 
 # Backward and optimizer kernels are named; everything else is forward.

@@ -3,7 +3,7 @@
 # About 7s with a warm target/. The release suite runs on pre-push instead — a
 # minute is too slow to pay on every WIP commit.
 #
-# Installed by scripts/install_hooks.sh. Bypass with `git commit --no-verify`.
+# Installed by scripts/common/install_hooks.sh. Bypass with `git commit --no-verify`.
 set -euo pipefail
 
 # This gate checks the working tree, not the staged snapshot, so a partially
@@ -12,4 +12,4 @@ if ! git diff --quiet; then
   printf '\033[33mnote:\033[0m unstaged changes present — this gate checks the working tree, not the index\n' >&2
 fi
 
-exec ./scripts/ci_local.sh fast
+exec ./scripts/local/ci_local.sh fast

@@ -13,7 +13,7 @@
 #   PORT      port for `make site` / `council` / `surprise`   [8080]
 #   BACKEND   wgpu | cpu, passed to the trainer and scorer    [wgpu]
 #   CKPT      checkpoint promoted by `make ship`
-#   STEPS PATIENCE RUNS OUT   forwarded to scripts/train_char.sh
+#   STEPS PATIENCE RUNS OUT   forwarded to scripts/local/train_char.sh
 
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
@@ -42,23 +42,24 @@ help: ## Show this help
 	@printf '\nknobs: PORT=%s BACKEND=%s CKPT=%s\n' '$(PORT)' '$(BACKEND)' '$(CKPT)'
 
 # ── training ─────────────────────────────────────────────────────────────────
-# scripts/train_char.sh scores what already exists, trains several recipes,
-# ranks them, and prints the command to ship the winner. Safe to interrupt.
+# scripts/local/train_char.sh scores what already exists, trains several
+# recipes, ranks them, and prints the command to ship the winner. Safe to
+# interrupt.
 
 train: ## Full training campaign: train, score, name a champion (~10h)
-	./scripts/train_char.sh
+	./scripts/local/train_char.sh
 
 train-quick: ## 600-step smoke test of the whole training flow
-	./scripts/train_char.sh --quick
+	./scripts/local/train_char.sh --quick
 
 train-baseline: ## Score the checkpoints you already have, train nothing (~4min)
-	./scripts/train_char.sh --baseline-only
+	./scripts/local/train_char.sh --baseline-only
 
 train-report: ## Re-render the campaign report from existing scores
-	./scripts/train_char.sh --report
+	./scripts/local/train_char.sh --report
 
 ship: ## Promote a checkpoint into assets/ (CKPT=path/to.safetensors)
-	./scripts/ship_char_model.sh $(CKPT)
+	./scripts/local/ship_char_model.sh $(CKPT)
 	@printf '\nnow regenerate the browser gate fixture:\n'
 	@printf '  cargo run --release --example gate_tokens -- --model assets/shakespeare_char\n'
 
@@ -67,12 +68,12 @@ ship: ## Promote a checkpoint into assets/ (CKPT=path/to.safetensors)
 # and one copy of the checkpoint. This is what Pages deploys.
 
 site: ## Build the whole site and serve it on :$(PORT)
-	./scripts/build_site.sh
-	./scripts/serve_web.sh $(PORT)
+	./scripts/common/build_site.sh
+	./scripts/local/serve_web.sh $(PORT)
 
 site-verify: ## Build the site and drive all three pages on a real GPU
-	./scripts/build_site.sh
-	python3 scripts/check_pages.py
+	./scripts/common/build_site.sh
+	python3 scripts/local/check_pages.py
 
 # ── tools ────────────────────────────────────────────────────────────────────
 # Each tool page also builds standalone, without the rest of the site.
@@ -89,18 +90,18 @@ top: ## Run forge-top, the terminal model browser
 	cargo run --release -p forge-top -- --path models/ --path checkpoints/
 
 # ── testing ──────────────────────────────────────────────────────────────────
-# scripts/ci_local.sh defines what "green" means; the git hooks call the same
-# two stages. `check` is pre-commit, `check-full` is pre-push.
+# scripts/local/ci_local.sh defines what "green" means; the git hooks call the
+# same two stages. `check` is pre-commit, `check-full` is pre-push.
 
 check: ## Fast gate: fmt, clippy, wasm + tool builds, dep assert, site (~10s)
-	./scripts/ci_local.sh fast
+	./scripts/local/ci_local.sh fast
 
 check-full: ## Everything in check, plus the release test suite (~1m10s)
-	./scripts/ci_local.sh full
+	./scripts/local/ci_local.sh full
 
 # `--features train`: it is off by default, so without it cargo silently skips
 # tests/training.rs, tests/autograd.rs and tests/train_ops.rs. Matches
-# scripts/ci_local.sh.
+# scripts/local/ci_local.sh.
 test: ## Run the release test suite only
 	cargo test -p forge-ml --release --locked --features train
 	cargo test -p forge-council --release --locked
@@ -120,13 +121,13 @@ clippy: ## Lint with warnings denied
 # ── setup ────────────────────────────────────────────────────────────────────
 
 data: ## Fetch the tinyshakespeare corpus
-	./scripts/download_shakespeare.sh
+	./scripts/local/download_shakespeare.sh
 
 gpt2: ## Fetch GPT-2 weights (needed by gpt2_e2e and kv_cache)
-	./scripts/download_gpt2.sh
+	./scripts/local/download_gpt2.sh
 
 hooks: ## Install the pre-commit / pre-push hooks
-	./scripts/install_hooks.sh
+	./scripts/common/install_hooks.sh
 
 clean: ## Remove the built pages
 	rm -rf docs/dist tools/council/dist tools/surprise/dist

@@ -9,7 +9,7 @@ import pathlib
 import torch
 from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 PROMPT = "Hello, my dog is cute"
 GREEDY_TOKENS = 15
 
