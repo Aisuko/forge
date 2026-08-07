@@ -1,0 +1,27 @@
+[package]
+name = "forge-surprise"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.87"
+license = "AGPL-3.0-only"
+description = "Per-position surprisal for text that already exists, and the page that reads it, built on the Forge runtime"
+repository = "https://github.com/Aisuko/forge"
+# A demonstration of the runtime, not a library to depend on.
+publish = false
+
+[lib]
+name = "forge_surprise"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# `path` is what the workspace resolves; `version` is what makes this a
+# publishable shape now that forge-ml is on crates.io.
+forge-ml = { path = "../..", version = "0.4" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster = "0.4"

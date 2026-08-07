@@ -200,6 +200,40 @@
     @apply font-semibold text-forge-700 dark:text-forge-300;
   }
 
+  /* ── the surprise page's resolve ──────────────────────────────────────
+     A character is either still spinning through the alternatives the model
+     weighed, or it has landed. Both states are one <span> in a monospace run,
+     so nothing here may change the box: no padding, no font-size, no weight
+     that a proportional face would reflow on. */
+
+  /* Unresolved. Dimmed rather than coloured — the tint means "this is how
+     surprised it was", and a character that has not landed yet has no business
+     making that claim. */
+  .tok-spin {
+    @apply text-ink-300 dark:text-ink-500;
+  }
+
+  /* The moment it lands. The background is set inline, per character, from the
+     same bits that set the lock time; this only fades it in, so the paragraph
+     colours up as its hold-outs resolve rather than all at once. */
+  .tok-locked {
+    @apply rounded-sm;
+    animation: tok-land 320ms ease-out both;
+  }
+
+  @keyframes tok-land {
+    from {
+      background-color: transparent;
+    }
+  }
+
+  /* Reserved from the first frame: the panel fills on hover and eight rows
+     arriving at once would otherwise drag the text column's height around
+     under the cursor. */
+  #react-bars {
+    min-height: 11rem;
+  }
+
   /* ── where it looked ──────────────────────────────────────────────────── */
 
   /* One column per key, 32 of them, each holding a bar and the character it

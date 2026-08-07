@@ -2,14 +2,15 @@
 # Compose the site into docs/dist/: the landing page and both tool pages, as
 # one artifact. This is what .github/workflows/pages.yml deploys.
 #
-#   ./scripts/common/build_site.sh              # full build, including both wasm bundles
+#   ./scripts/common/build_site.sh              # full build, including all three wasm bundles
 #   ./scripts/common/build_site.sh --no-wasm    # skip wasm; the pages will 404
 #   ./scripts/local/serve_web.sh                # then serve it
 #
 # Each page's source stays where it is owned — docs/src/ for the landing page,
-# tools/*/web/ for the tools — and is copied here, never duplicated. The core
-# wasm bundle and the 6.7 MB checkpoint are built once and read by two pages;
-# assembling three self-contained dist/s instead would ship them twice.
+# tools/*/web/ for the tools — and is copied here, never duplicated. Each tool
+# ships its own bundle, because a #[wasm_bindgen] export is a GC root the
+# linker cannot drop; the 6.7 MB checkpoint is the part worth sharing, and
+# index.html and react.html read one copy of it.
 #
 # Everything is relative to the artifact root: the site is served from /forge/.
 set -euo pipefail
@@ -46,6 +47,7 @@ if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
   ./scripts/common/build_web.sh "$DIST/forge" forge-ml
   ./scripts/common/build_web.sh "$DIST/forge-council" forge-council
+  ./scripts/common/build_web.sh "$DIST/forge-surprise" forge-surprise
 else
   echo "warning: --no-wasm, so every page will 404 on its bundle" >&2
 fi

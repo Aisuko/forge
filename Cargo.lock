@@ -645,6 +645,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-surprise"
+version = "0.4.0"
+dependencies = [
+ "forge-ml",
+ "js-sys",
+ "pollster",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "forge-top"
 version = "0.4.0"
 dependencies = [

@@ -262,19 +262,6 @@ impl KvCache {
     }
 }
 
-/// Per-position surprisal from [`Gpt2::surprisal_async`]. All three vectors are
-/// the length of the input, and index 0 is a placeholder in each — nothing
-/// precedes the first token.
-#[derive(Clone, Debug)]
-pub struct Surprisal {
-    /// `-log2 p(ids[i] | ids[..i])`, in bits.
-    pub bits: Vec<f32>,
-    /// The token the model would have chosen at this position.
-    pub top: Vec<u32>,
-    /// How probable the model thought its own choice was, in `0..=1`.
-    pub top_p: Vec<f32>,
-}
-
 impl Gpt2 {
     /// Load a checkpoint of either format from disk, by content and not by
     /// extension — see [`Gpt2::from_checkpoint_bytes`]. Pair it with
@@ -921,76 +908,6 @@ impl Gpt2 {
             }
         }
         Ok((logits, trace))
-    }
-
-    /// How surprised the model was by text that is already there.
-    ///
-    /// This is reading, not writing: for each position the model is asked what
-    /// it expected *before* seeing the character that actually followed, and
-    /// the answer is scored against what did. It is a teacher-forced scoring
-    /// pass, so the whole sequence costs **one forward pass** rather than `t`
-    /// decode steps — the model reads a paragraph in the time it would take to
-    /// generate one character.
-    ///
-    /// `bits[i]` is `-log2 p(ids[i] | ids[..i])`: 0 means "entirely expected",
-    /// and `log2(vocab_size)` is what a uniform guess would score.
-    /// `bits[0]` is 0 — nothing precedes the first token, so nothing about it
-    /// can be a surprise.
-    ///
-    /// `top[i]` and `top_p[i]` are the token the model would have picked at
-    /// that position and how sure it was, which is what makes a surprise
-    /// legible: "it expected `e` here" says more than a number.
-    ///
-    /// The softmax and the gather are done on the host deliberately. The GPU
-    /// ops that would do them (`ops::softmax` over `[t, vocab]`, and
-    /// `ops::gather_nll`) sit behind the `train` feature, and for a
-    /// character-level vocabulary the host loop is free. Note the cost model
-    /// for a BPE model, though: the readback is `t × vocab × 4` bytes, which
-    /// for GPT-2's 50257-token vocabulary is ~196 KB per position.
-    pub async fn surprisal_async(&self, ids: &[u32]) -> Result<Surprisal> {
-        let t = ids.len();
-        if t == 0 {
-            return Err(ForgeError::Shape(
-                "surprisal needs a non-empty sequence".into(),
-            ));
-        }
-        let vocab = self.config.vocab_size;
-        let logits = self.forward(ids)?.to_vec_f32_async().await?;
-
-        let mut out = Surprisal {
-            bits: vec![0.0; t],
-            top: vec![ids[0]; t],
-            top_p: vec![0.0; t],
-        };
-        // Position i is predicted by row i-1: the model saw ids[..i] and the
-        // logits it produced there are its guess about ids[i].
-        for i in 1..t {
-            let row = &logits[(i - 1) * vocab..i * vocab];
-            // Log-sum-exp in the stable form; a char model's logits are small,
-            // but a shifted exp costs nothing and cannot overflow.
-            let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let sum: f32 = row.iter().map(|l| (l - max).exp()).sum();
-            let log_z = max + sum.ln();
-
-            let target = ids[i] as usize;
-            if target >= vocab {
-                return Err(ForgeError::Shape(format!(
-                    "token id {target} >= vocab_size {vocab}"
-                )));
-            }
-            // nats -> bits: a bit is the unit a reader can reason about.
-            out.bits[i] = -(row[target] - log_z) / std::f32::consts::LN_2;
-
-            let (best, best_logit) = row
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(i, l)| (i as u32, *l))
-                .unwrap_or((0, 0.0));
-            out.top[i] = best;
-            out.top_p[i] = (best_logit - log_z).exp();
-        }
-        Ok(out)
     }
 
     // ---- construction, parameters, serialization ----

@@ -27,7 +27,7 @@ run the runtime in a browser tab on your own GPU, with no server in the loop:
 
 - **Watch it think** — one character at a time, showing the shortlist it chose from and the positions it attended to
 - **[The council](https://aisuko.github.io/forge/council.html)** — four small models merging their hidden states into one character
-- **[Surprise](https://aisuko.github.io/forge/react.html)** — select any text; the model tints it by how surprised it was to read it
+- **[Surprise](https://aisuko.github.io/forge/react.html)** — a paragraph resolving character by character, each in the time the model needed to be sure of it
 
 Or build and serve the whole site locally:
 
@@ -111,14 +111,14 @@ work of its own:
 | --- | --- |
 | [`tools/council`](tools/council) | Four small GPT-2s run in parallel and merged in hidden space by an entropy router, plus the page that draws the vectors they exchange |
 | [`tools/forge-top`](tools/forge-top) | A terminal model browser and run dashboard |
-| [`tools/surprise`](tools/surprise) | A page that tints text by how surprised the model was to read it |
+| [`tools/surprise`](tools/surprise) | Text that resolves character by character in the time the model needed to be sure of each one, and the scoring pass behind it |
 
-Through 0.1.0 the first two were `council` and `tui` features of this crate.
-They are separate crates from 0.3.0 because the test of what belongs in the
-runtime is whether a third-party crate could have written it against the public
-API — and all three could. The primitives they stand on stayed:
-`Gpt2::hidden_step`, `logits_from_hidden`, `wte_host`, `surprisal_async`,
-`Sampler`, `top_probs`.
+Through 0.1.0 the first two were `council` and `tui` features of this crate,
+and `surprise` was a page over a `WasmGpt2.surprisal` binding here. They are
+separate crates because the test of what belongs in the runtime is whether a
+third-party crate could have written it against the public API — and all three
+could. The primitives they stand on stayed: `Gpt2::hidden_step`,
+`logits_from_hidden`, `wte_host`, `forward`, `Sampler`, `top_probs`.
 
 ```bash
 cargo run --release --features train --example train_shakespeare -- --backend wgpu

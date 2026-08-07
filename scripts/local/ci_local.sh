@@ -63,12 +63,13 @@ run "cargo clippy -D warnings"     cargo clippy -p forge-ml --all-targets --lock
 # `train` is off by default, so autograd, optim, the nine backward kernels and
 # four targets are invisible to the pass above. Lint them explicitly.
 run "clippy --features train"      cargo clippy -p forge-ml --all-targets --locked --features train -- -D warnings
-run "clippy tools"                 cargo clippy -p forge-council -p forge-top --all-targets --locked -- -D warnings
+run "clippy tools"                 cargo clippy -p forge-council -p forge-surprise -p forge-top --all-targets --locked -- -D warnings
 run "build wasm32"                 cargo build --release --locked --target wasm32-unknown-unknown -p forge-ml
 run "build wasm32 (council)"       cargo build --release --locked --target wasm32-unknown-unknown -p forge-council
+run "build wasm32 (surprise)"      cargo build --release --locked --target wasm32-unknown-unknown -p forge-surprise
 run "build forge-top"              cargo build --release --locked -p forge-top
 run "no TUI deps in forge-ml"      assert_no_tui_deps
-# ~0.5s: both wasm crates are already built above, so this is wasm-bindgen,
+# ~0.5s: all three wasm crates are already built above, so this is wasm-bindgen,
 # Tailwind and the copies. It catches a page naming an asset that moved, which
 # nothing else here would see. Whether the pages *run* is `make site-verify`.
 run "build site"                   ./scripts/common/build_site.sh
@@ -82,7 +83,13 @@ if [[ "$STAGE" == full ]]; then
   fi
   # `train` adds autograd/training/train_ops; cargo skips them without it.
   run "cargo test --release"       cargo test -p forge-ml --release --locked --features train
-  run "cargo test (tools)"         cargo test -p forge-council --release --locked
+  # Two invocations, not `-p forge-council -p forge-surprise`: cargo runs the
+  # two test binaries concurrently, and the gate serializing device creation
+  # (src/backend/wgpu/mod.rs) is a process-local static, so two processes
+  # racing request_adapter wedge in the driver — the hang tests/
+  # device_concurrency.rs exists to catch inside one process.
+  run "cargo test (council)"       cargo test -p forge-council --release --locked
+  run "cargo test (surprise)"      cargo test -p forge-surprise --release --locked
 fi
 
 printf '\n%s%s✓ all %s checks passed%s %s(%ss)%s\n' \

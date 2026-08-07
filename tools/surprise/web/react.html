@@ -44,17 +44,27 @@
            wants it after they have already seen the text change colour. -->
       <header class="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p class="chip">no button · reacts to selection · runs on your GPU</p>
+          <p class="chip">one forward pass · replayed · runs on your GPU</p>
           <h1 class="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
             The model is <span class="text-forge-600">reading</span>, not writing.
           </h1>
           <p class="mt-3 max-w-2xl text-ink-500 dark:text-ink-300">
-            Select any stretch of the text below. Every character is tinted by how
-            surprised the model was to find it there — one forward pass over your
-            whole selection, on your own GPU.
+            Every character below resolves in the time the model needed to be sure
+            of it. Most of the paragraph lands on the first frame; what is still
+            flickering is what it was still weighing, cycling through the
+            characters it actually considered there. Select any stretch to score
+            it again on its own.
           </p>
         </div>
-        <p id="react-device" class="font-mono text-xs text-ink-500 dark:text-ink-300"></p>
+        <!-- Above the fold and not grey. The reveal runs once on its own when
+             the weights land, and a reader who arrived mid-way through it has
+             no other way back to the thing the page is about. -->
+        <div class="flex flex-col items-start gap-3 sm:items-end">
+          <button id="react-replay" type="button" class="btn-primary" disabled>
+            Read it again
+          </button>
+          <p id="react-device" class="font-mono text-xs text-ink-500 dark:text-ink-300"></p>
+        </div>
       </header>
 
       <!-- ── legend ───────────────────────────────────────────────────── -->
@@ -75,24 +85,56 @@
 
       <!-- ── the text ─────────────────────────────────────────────────── -->
       <section id="stage" class="mt-6">
-        <div class="card">
-          <div
-            id="react-status"
-            class="mb-4 font-mono text-xs text-ink-500 dark:text-ink-300"
-            role="status"
-            aria-live="polite"
-          >
-            starting…
-          </div>
-          <div id="react-progress-wrap" class="mb-4 meter" hidden>
-            <span id="react-progress" class="meter-fill" style="width: 0%"></span>
+        <!-- Two columns from `sm` up. The panel used to be a grey line below
+             three cards of prose, which put it off-screen at exactly the moment
+             a reader was hovering the text that drives it. -->
+        <div class="card grid gap-6 sm:grid-cols-[minmax(0,1fr)_17rem]">
+          <div class="min-w-0">
+            <div
+              id="react-status"
+              class="mb-4 font-mono text-xs text-ink-500 dark:text-ink-300"
+              role="status"
+              aria-live="polite"
+            >
+              starting…
+            </div>
+            <div id="react-progress-wrap" class="mb-4 meter" hidden>
+              <span id="react-progress" class="meter-fill" style="width: 0%"></span>
+            </div>
+
+            <div
+              id="react-text"
+              class="whitespace-pre-wrap font-mono text-[13px] leading-7 sm:text-sm"
+            ></div>
           </div>
 
-          <div
-            id="react-text"
-            class="whitespace-pre-wrap font-mono text-[13px] leading-7 sm:text-sm"
-          ></div>
+          <!-- Sticky, so it stays beside the cursor while the reader moves down
+               a passage. -->
+          <aside class="sm:sticky sm:top-20 sm:self-start">
+            <h2 class="panel-h text-sm">At this character</h2>
+            <p
+              id="react-at"
+              class="panel-sub font-mono"
+              aria-live="polite"
+            >
+              hover any character
+            </p>
+            <div id="react-bars" class="mt-3"></div>
+            <p class="mt-2 text-[11px] text-ink-500 dark:text-ink-300">
+              The characters the model weighed here — the same ones the flicker
+              cycles through, in the same proportions.
+            </p>
+          </aside>
         </div>
+
+        <!-- Said out loud, because the animation is flattering and a reader
+             could otherwise conclude each blink cost a forward pass. -->
+        <p class="mt-2 text-xs text-ink-500 dark:text-ink-300">
+          The scoring pass finished in a few milliseconds. What you watched is
+          that one result played back at the speed of its own numbers — every
+          lock time is a surprisal value — and no inference runs while a
+          character is flickering.
+        </p>
 
         <!-- A selection is a different question from the passage it came from:
              the model sees only the selected characters, with none of the
@@ -136,17 +178,6 @@ To be, or not to be: that is the question.</textarea
         </div>
       </section>
 
-      <!-- ── the readout ──────────────────────────────────────────────── -->
-      <section class="mt-4">
-        <div
-          id="react-readout"
-          class="card font-mono text-xs text-ink-500 dark:text-ink-300"
-          aria-live="polite"
-        >
-          Hover a character to see what the model expected instead.
-        </div>
-      </section>
-
       <!-- ── the prose, after the thing ───────────────────────────────── -->
       <section class="mt-12">
         <div class="grid gap-4 sm:grid-cols-3">
@@ -156,7 +187,9 @@ To be, or not to be: that is the question.</textarea
               Before each character, the model has read everything before it and
               formed an opinion about what comes next. The tint is the
               probability it gave the character that actually turned up, in bits:
-              0 means it was certain, 6 means it was as good as guessing.
+              0 means it was certain, 6 means it was as good as guessing. That
+              same number is how long the character took to stop flickering, so
+              the last ones to land are the ones it was least sure of.
             </p>
           </div>
           <div class="card">
@@ -171,10 +204,12 @@ To be, or not to be: that is the question.</textarea
           <div class="card">
             <h2 class="panel-h text-sm">Why it is a better demo</h2>
             <p class="mt-2 text-sm text-ink-500 dark:text-ink-300">
-              Every other demo asks you to compose a prompt, which is work. This
-              one asks nothing: it reacts to reading. And a model that reacts to
-              a selection in a few milliseconds is a model that is genuinely on
-              your machine — there is no round trip that could be that fast.
+              Nothing sweeps left to right, because nothing was computed left to
+              right: every position was scored in the same pass, and the only
+              thing separating them is how sure the model was. The whole
+              paragraph's distribution — every character's alternatives, in
+              order — arrived at once, in milliseconds. No round trip delivers
+              that.
             </p>
           </div>
         </div>

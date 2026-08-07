@@ -10,7 +10,7 @@ does.
 | --- | --- | --- |
 | [`council/`](council) | Four small GPT-2s run in parallel and merged in hidden space, plus the page that draws the vectors they exchange | `cargo run -p forge-council --example council_demo` / `./tools/council/build.sh` |
 | [`forge-top/`](forge-top) | A terminal model browser and run dashboard | `cargo run --release -p forge-top -- --path models/` |
-| [`surprise/`](surprise) | A page that tints text by how surprised the model was to read it. No Rust — it drives `WasmGpt2.surprisal`, which is runtime | `./tools/surprise/build.sh` |
+| [`surprise/`](surprise) | Text that resolves character by character in the time the model needed to be sure of each one, and the scoring pass behind it | `cargo test -p forge-surprise` / `./tools/surprise/build.sh` |
 
 `shared/` is not a tool: it is the page furniture **every** Forge page uses, the
 landing page in `docs/src/` included — one Tailwind entry point so all three
@@ -31,8 +31,15 @@ runtime.
 
 The runtime kept what the tools stand on, because those are primitives and not
 demonstrations: `Gpt2::hidden_step`, `logits_from_hidden` and `wte_host` (split
-a model's body from its wte-tied head), `Gpt2::surprisal_async` (score text that
-already exists), `Sampler` and `top_probs`.
+a model's body from its wte-tied head), `Gpt2::forward` (the `[t, vocab]` logits
+a scoring pass reads), `Sampler` and `top_probs`.
+
+`surprise` was the exception until recently: it had no Rust and drove
+`WasmGpt2.surprisal` directly, which put a binding only one page called in the
+runtime's own bundle. Scoring text is still a primitive — `forward` is right
+there — but *presenting* a score, in bits, with a ranked list of alternatives
+sized for an animation, is a page's vocabulary. It is a crate now, like the
+other two.
 
 ## The dependency names a path and a version
 
@@ -59,9 +66,12 @@ Each web tool builds a self-contained artifact into its own gitignored `dist/`:
 
 The deployed site at [aisuko.github.io/forge](https://aisuko.github.io/forge/)
 is a different artifact: `scripts/common/build_site.sh` composes the landing page in
-`docs/src/` with both pages here, sharing one core wasm bundle and one copy of
-the 6.7 MB checkpoint. The page source is not copied into `docs/` to do it —
-`web/` here stays the only definition of each page.
+`docs/src/` with both pages here, sharing one copy of the 6.7 MB checkpoint
+between `index.html` and `react.html`. Each tool still ships its own bundle —
+a `#[wasm_bindgen]` export is a GC root the linker cannot drop, so the bundles
+are the price of the tools not living in the runtime. The page source is not
+copied into `docs/` to do it — `web/` here stays the only definition of each
+page.
 
 A standalone `dist/` therefore has nav links to pages it does not ship, and
 `check_site.py` reports them as warnings. The composed site is built with

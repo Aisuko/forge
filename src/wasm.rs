@@ -1,10 +1,9 @@
 //! Browser bindings: a wasm-bindgen facade over the async inference API.
 //! Inference only — training is out of browser scope for 1.0.
 //!
-//! Everything here marshals a runtime primitive, including
-//! [`WasmGpt2::surprisal`]: scoring text that already exists is as much a
-//! primitive as generating it. Anything that *composes* these into a
-//! demonstration is a tool, and lives in `tools/`.
+//! Everything here marshals a runtime primitive. Anything that *composes*
+//! these into a demonstration is a tool, and lives in `tools/` with its own
+//! bundle — `forge_council::wasm`, `forge_surprise::wasm`.
 
 use wasm_bindgen::prelude::*;
 
@@ -191,50 +190,6 @@ impl WasmGpt2 {
             // Byte-level BPE encodes any UTF-8 input by construction.
             AnyTokenizer::Bpe(_) => String::new(),
         }
-    }
-
-    /// Score `text` for surprise: one forward pass, every position at once.
-    ///
-    /// Returns `{ tokens, bits, top, topP }`, all the same length:
-    ///
-    /// - `tokens[i]` — the decoded text of position `i`, so the page can lay
-    ///   out exactly the characters the model saw rather than re-splitting the
-    ///   string itself and hoping the two agree.
-    /// - `bits[i]` — `-log2 p` of that token given everything before it.
-    ///   `bits[0]` is 0.
-    /// - `top[i]` / `topP[i]` — what the model expected instead, and how sure
-    ///   it was.
-    ///
-    /// This is the reactive page's whole engine. It is a *scoring* call, not a
-    /// generation call: nothing is sampled, and the cost is one pass over the
-    /// selection regardless of its length.
-    ///
-    /// Errors if the text contains characters the tokenizer has never seen —
-    /// call [`WasmGpt2::unsupported_chars`] first and tell the reader, which
-    /// is friendlier than a thrown exception mid-hover.
-    pub async fn surprisal(&self, text: &str) -> Result<JsValue, JsValue> {
-        let ids = self.tokenizer.encode(text).map_err(js_err)?;
-        if ids.is_empty() {
-            return Err(JsValue::from_str("surprisal needs non-empty text"));
-        }
-        let s = self.model.surprisal_async(&ids).await.map_err(js_err)?;
-
-        let tokens = js_sys::Array::new_with_length(ids.len() as u32);
-        let top = js_sys::Array::new_with_length(ids.len() as u32);
-        for (i, id) in ids.iter().enumerate() {
-            tokens.set(i as u32, JsValue::from_str(&self.tokenizer.decode(&[*id])));
-            top.set(
-                i as u32,
-                JsValue::from_str(&self.tokenizer.decode(&[s.top[i]])),
-            );
-        }
-
-        let o = js_sys::Object::new();
-        set(&o, "tokens", &tokens.into());
-        set(&o, "top", &top.into());
-        set(&o, "bits", &f32a(&s.bits));
-        set(&o, "topP", &f32a(&s.top_p));
-        Ok(o.into())
     }
 
     /// Generate with KV-cache decode, streaming each newly decoded text

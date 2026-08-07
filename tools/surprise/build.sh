@@ -29,9 +29,10 @@ cp "$root/tools/shared/favicon.svg" "$DIST/"
 
 if [[ $WITH_WASM -eq 1 ]]; then
   echo "== wasm"
-  ./scripts/common/build_web.sh "$DIST/forge"
+  # forge-surprise/, not forge/: in the composed site forge/ is the core bundle.
+  ./scripts/common/build_web.sh "$DIST/forge-surprise" forge-surprise
 else
-  echo "warning: --no-wasm, so the page will 404 on ./forge/forge.js" >&2
+  echo "warning: --no-wasm, so the page will 404 on ./forge-surprise/forge_surprise.js" >&2
 fi
 
 if [[ -d assets/shakespeare_char ]]; then

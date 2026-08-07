@@ -47,8 +47,7 @@ pub use device::Device;
 pub use dtype::DType;
 pub use error::{ForgeError, Result};
 pub use models::gpt2::{
-    AttnStep, Gpt2, Gpt2Config, KvCache, LayerDetail, Sampler, Sampling, StepTrace, Surprisal,
-    top_probs,
+    AttnStep, Gpt2, Gpt2Config, KvCache, LayerDetail, Sampler, Sampling, StepTrace, top_probs,
 };
 pub use shape::Shape;
 pub use tensor::Tensor;
