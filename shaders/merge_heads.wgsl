@@ -1,11 +1,12 @@
 // Merge per-head attention output back to model layout:
-// x: [h, t, hd]  ->  out: [t, c], where c = h * hd.
+// x: [b*h, t, hd]  ->  out: [b*t, c], where c = h * hd.
+// See split_heads.wgsl for what `b` is; at b = 1 this is the original.
 
 struct Params {
     t: u32,
     c: u32,
     h: u32,
-    _pad0: u32,
+    b: u32,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -19,13 +20,15 @@ fn main(
     @builtin(local_invocation_index) li: u32,
 ) {
     let i = (wid.y * nwg.x + wid.x) * 256u + li;
-    let n = p.t * p.c;
+    let n = p.b * p.t * p.c;
     if (i >= n) { return; }
     let hd = p.c / p.h;
-    // i indexes [t, c]
-    let tt = i / p.c;
+    // i indexes [b*t, c]
+    let bt = i / p.c;
     let col = i % p.c;
+    let bb = bt / p.t;
+    let tt = bt % p.t;
     let hh = col / hd;
     let d = col % hd;
-    out[i] = x[hh * p.t * hd + tt * hd + d];
+    out[i] = x[(bb * p.h + hh) * p.t * hd + tt * hd + d];
 }

@@ -157,6 +157,25 @@ async function startDecision() {
   }
 }
 
+// ── the cost instruments ──────────────────────────────────────────────────
+
+let costPromise = null;
+
+function ensureCost() {
+  costPromise = costPromise || startCost();
+  return costPromise;
+}
+
+async function startCost() {
+  try {
+    const { createCost } = await import("./cost.js");
+    return createCost();
+  } catch (e) {
+    console.warn("cost instruments unavailable:", e);
+    return null;
+  }
+}
+
 // ── block and head pickers ────────────────────────────────────────────────
 // Built from the model's own config rather than hard-coded to 6 x 6: the
 // section has to describe the model that is running.
@@ -249,12 +268,16 @@ if (!("gpu" in navigator)) {
  * when it is served against a model directory that predates the trainer
  * change, and a stale hard-coded figure is exactly what this replaces.
  */
+let weightFormat = null;
+
 async function showQuality() {
   try {
     const m = await fetch("./model/metrics.json").then((r) =>
       r.ok ? r.json() : null,
     );
-    if (!m || typeof m.val_loss !== "number") return;
+    if (!m) return;
+    if (typeof m.format === "string") weightFormat = m.format;
+    if (typeof m.val_loss !== "number") return;
     const val = m.val_loss.toFixed(3);
 
     // The model card quotes the same measured figure, and one source beats two
@@ -351,23 +374,17 @@ function wire() {
   /**
    * Parameter count from the config the model reports, not a constant typed
    * into this file. Weight-tied LM head, so wte is counted once.
+   *
+   * Per block: 12c² of weights (3c² qkv, c² proj, 4c² fc, 4c² mlp proj) and
+   * 13c of biases and LayerNorm parameters.
    */
-  function paramCount(m) {
+  function paramBreakdown(m) {
     const c = m.n_embd();
-    // Per block: 12c² of weights (3c² qkv, c² proj, 4c² fc, 4c² mlp proj) and
-    // 13c of biases and LayerNorm parameters.
-    const perBlock = 12 * c * c + 13 * c;
-    return m.vocab_size() * c + m.n_ctx() * c + m.n_layer() * perBlock + 2 * c;
-  }
-
-  /** The efficiency tiles. Measured values or an em dash — never a guess. */
-  function fillTiles(m, tokPerSec) {
-    $("eff-gpu").textContent = m.device_info();
-    $("eff-tps").textContent = `${tokPerSec.toFixed(1)} tok/s`;
-    $("eff-size").textContent = `${(weightBytes / 1e6).toFixed(1)} MB`;
-    $("eff-params").textContent = `${(paramCount(m) / 1e6).toFixed(2)} M`;
-    $("eff-note").textContent =
-      "Measured on your machine, in the run above — not on ours.";
+    const blocks = m.n_layer();
+    const embed = m.vocab_size() * c + m.n_ctx() * c + 2 * c;
+    const attn = blocks * (4 * c * c + 6 * c);
+    const mlp = blocks * (8 * c * c + 7 * c);
+    return { embed, attn, mlp, total: embed + attn + mlp };
   }
 
   /** The char vocab knows 65 characters; say so before generating, not after. */
@@ -413,6 +430,7 @@ function wire() {
     run.disabled = true;
     // Pressing Run twice must not offer a third press from the cover.
     stageState("starting…", false);
+    let cost = null;
     try {
       if (!model) {
         // One in-flight load, however many times Run is pressed.
@@ -440,6 +458,18 @@ function wire() {
       dec?.setVocab(model.vocab_size());
       dec?.reset();
 
+      cost = await ensureCost();
+      cost?.ready({
+        gpu: model.device_info(),
+        weightBytes,
+        format: weightFormat,
+        params: paramBreakdown(model),
+      });
+      cost?.reset();
+      $("eff-note").textContent =
+        "The weights and the parameter split describe the model now on your " +
+        "GPU; the chart fills in as it generates.";
+
       const prompt = $("demo-prompt").value;
       const tokens = Array.from(model.tokenize_display(prompt));
       stage?.setTokens(tokens);
@@ -456,6 +486,7 @@ function wire() {
       const t0 = performance.now();
       let count = 0;
       let decodeStart = null;
+      let lastToken = 0;
 
       const onText = (s) => {
         // Returning false stops generation after the current token.
@@ -465,6 +496,8 @@ function wire() {
         // It is not a generated token and must not be counted as one.
         if (decodeStart === null) {
           decodeStart = performance.now();
+          lastToken = decodeStart;
+          cost?.prefill(tokens.length, decodeStart - t0);
           dec?.setContext(s);
           return;
         }
@@ -473,8 +506,11 @@ function wire() {
         // The character that settles the bars drawn by the trace before it —
         // see onTrace. Nothing is marked when it is not among them.
         dec?.chose(s);
-        const dt = (performance.now() - decodeStart) / 1000;
+        const now = performance.now();
+        const dt = (now - decodeStart) / 1000;
         if (dt > 0) status(`generating — ${(count / dt).toFixed(1)} tok/s`);
+        cost?.push(1000 / Math.max(now - lastToken, 0.001), count / Math.max(dt, 1e-6));
+        lastToken = now;
       };
 
       const onTrace = (trace) => {
@@ -521,7 +557,11 @@ function wire() {
           `${model.device_info()}`,
       );
       dec?.end();
-      if (count > 0) fillTiles(model, rate);
+      cost?.done(rate);
+      if (count > 0) {
+        $("eff-note").textContent =
+          "Measured on your machine, in the run above — not on ours.";
+      }
     } catch (e) {
       // console_error_panic_hook is installed by wasm::start, so a Rust panic
       // arrives here with a real message rather than "unreachable".
@@ -546,6 +586,7 @@ function wire() {
       if (runBtn) runBtn.disabled = false;
       const stopBtn = $("demo-stop");
       if (stopBtn) stopBtn.hidden = true;
+      cost?.done(NaN);
     }
   });
 

@@ -1,11 +1,11 @@
-// merge_heads backward: dy [t, c] -> dx [h, t, hd], hd = c / h.
-// One thread per element.
+// merge_heads backward: dy [b*t, c] -> dx [b*h, t, hd], hd = c / h.
+// One thread per element. See split_heads.wgsl for `b`.
 
 struct Params {
     t: u32,
     c: u32,
     h: u32,
-    _pad0: u32,
+    b: u32,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -19,11 +19,13 @@ fn main(
     @builtin(local_invocation_index) li: u32,
 ) {
     let i = (wid.y * nwg.x + wid.x) * 256u + li;
-    if (i >= p.t * p.c) { return; }
+    if (i >= p.b * p.t * p.c) { return; }
     let hd = p.c / p.h;
-    let hh = i / (p.t * hd);
+    let bh = i / (p.t * hd);
     let rem = i % (p.t * hd);
     let tt = rem / hd;
     let dd = rem % hd;
-    dx[i] = dy[tt * p.c + hh * hd + dd];
+    let bb = bh / p.h;
+    let hh = bh % p.h;
+    dx[i] = dy[(bb * p.t + tt) * p.c + hh * hd + dd];
 }

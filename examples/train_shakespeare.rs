@@ -34,6 +34,7 @@ struct Args {
     steps: usize,
     seq_len: usize,
     accum: usize,
+    micro_batch: usize,
     lr: f32,
     beta2: f32,
     warmup: usize,
@@ -81,10 +82,19 @@ fn defaults(tokenizer: &str) -> Args {
         tokenizer: tokenizer.into(),
         steps: if char_mode { 5000 } else { 1500 },
         seq_len: 256,
-        // Roadmap v4 keeps the op surface single-sequence, so nanoGPT's
-        // batch_size=64 is reached through gradient accumulation. Training at
+        // The effective batch. nanoGPT's is 64 for the char run; training at
         // the BPE default of 2 with lr=1e-3 (tuned for 64) will not converge.
         accum: if char_mode { 64 } else { 2 },
+        // How much of `accum` goes through one forward/backward pass. The rest
+        // is still gradient accumulation, and `accum` must be a multiple of it.
+        //
+        // A pass holds every activation on its tape, so this trades memory for
+        // speed — but only up to a point, and 8 is where the char model's point
+        // is. Measured on an RTX A5000, s/step: 1 -> 0.88, 4 -> 0.48,
+        // 8 -> 0.47, 16 -> 0.53, 32 -> 0.61, 64 -> 0.62. Past 8 the attention
+        // probabilities alone are [batch*6, 256, 256], and the memory traffic
+        // costs more than the wider matmuls save.
+        micro_batch: if char_mode { 8 } else { 1 },
         lr: if char_mode { 1e-3 } else { 6e-4 },
         // AdamWOpts defaults to 0.95; nanoGPT sets 0.99 for this run.
         beta2: if char_mode { 0.99 } else { 0.95 },
@@ -138,6 +148,7 @@ fn parse_args() -> Args {
             "--steps" => a.steps = val().parse().unwrap(),
             "--seq-len" => a.seq_len = val().parse().unwrap(),
             "--accum" => a.accum = val().parse().unwrap(),
+            "--micro-batch" => a.micro_batch = val().parse().unwrap(),
             "--lr" => a.lr = val().parse().unwrap(),
             "--beta2" => a.beta2 = val().parse().unwrap(),
             "--warmup" => a.warmup = val().parse().unwrap(),
@@ -162,6 +173,12 @@ fn parse_args() -> Args {
             other => panic!("unknown flag {other}"),
         }
     }
+    assert!(
+        a.micro_batch > 0 && a.accum.is_multiple_of(a.micro_batch),
+        "--accum {} must be a multiple of --micro-batch {}",
+        a.accum,
+        a.micro_batch
+    );
     a
 }
 
@@ -330,8 +347,14 @@ fn main() {
         (n_params * 4) as f64 / 1e6
     );
     println!(
-        "train: {} steps, accum {} (effective batch), lr {:.1e}, beta2 {}, dropout {}",
-        a.steps, a.accum, a.lr, a.beta2, a.dropout
+        "train: {} steps, batch {} (accum {} x micro-batch {}), lr {:.1e}, beta2 {}, dropout {}",
+        a.steps,
+        a.accum,
+        a.accum / a.micro_batch,
+        a.micro_batch,
+        a.lr,
+        a.beta2,
+        a.dropout
     );
 
     let opts = AdamWOpts {
@@ -420,12 +443,26 @@ fn main() {
         };
         let mut loss_sum = 0.0f32;
         let mut grads_acc: Option<Vec<forge::Tensor>> = None;
-        for micro in 0..a.accum {
-            let s = rng.random_range(0..train_ids.len() - a.seq_len - 1);
-            let input = &train_ids[s..s + a.seq_len];
-            let target = &train_ids[s + 1..s + a.seq_len + 1];
-            let seed = (step * 1_000 + micro) as u32;
-            let (loss, grads) = model.loss_grads(input, target, a.dropout, seed).unwrap();
+        // One scope over the whole accumulation. `loss_grads_batched` opens its
+        // own for each pass, but the accumulation adds *between* them are this
+        // loop's own dispatches, and unscoped each was a `queue.submit` of its
+        // own — a fifth of the step spent in the driver.
+        let _scope = device.dispatch_scope();
+        let passes = a.accum / a.micro_batch;
+        for pass in 0..passes {
+            // The pass's sequences, concatenated: `loss_grads_batched` reads
+            // them as micro_batch rows of seq_len.
+            let mut input = Vec::with_capacity(a.micro_batch * a.seq_len);
+            let mut target = Vec::with_capacity(a.micro_batch * a.seq_len);
+            for _ in 0..a.micro_batch {
+                let s = rng.random_range(0..train_ids.len() - a.seq_len - 1);
+                input.extend_from_slice(&train_ids[s..s + a.seq_len]);
+                target.extend_from_slice(&train_ids[s + 1..s + a.seq_len + 1]);
+            }
+            let seed = (step * 1_000 + pass) as u32;
+            let (loss, grads) = model
+                .loss_grads_batched(&input, &target, a.seq_len, a.dropout, seed)
+                .unwrap();
             loss_sum += loss;
             grads_acc = Some(match grads_acc {
                 None => grads,
@@ -436,17 +473,19 @@ fn main() {
                     .collect(),
             });
         }
-        let loss = loss_sum / a.accum as f32;
-        // Mean over micro-batches.
+        let loss = loss_sum / passes as f32;
+        // Mean over passes — each pass already averaged its own sequences.
         let grads: Vec<forge::Tensor> = grads_acc
             .unwrap()
             .iter()
             .zip(&frozen)
             .map(|(g, f)| {
-                let s = if *f { 0.0 } else { 1.0 / a.accum as f32 };
+                let s = if *f { 0.0 } else { 1.0 / passes as f32 };
                 forge::ops::scale(g, s).unwrap()
             })
             .collect();
+        // The optimizer opens its own scope; this one has no more work.
+        drop(_scope);
         let mut params = model.params_mut().unwrap();
         let norm = opt.step(&mut params, &grads).unwrap();
         drop(params);

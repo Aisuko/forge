@@ -24,4 +24,19 @@ if [[ "$refs" -gt 0 && "$updates" -eq 0 ]]; then
   exit 0
 fi
 
-exec ./scripts/local/ci_local.sh full
+# Bounded, because the failure mode this is protecting against is not a red
+# test: a GPU driver can wedge a test binary, and an unbounded hook turns that
+# into a `git push` that hangs for hours with nothing printed. `full` is ~1m10s
+# warm, so 15 minutes is a wedge, not a slow machine. `--foreground` keeps the
+# script attached to the terminal so its output still streams.
+#
+# `timeout` signals the script, not its grandchildren, so a wedged test binary
+# can outlive this — the push fails loudly either way, which is the point.
+timeout --foreground --kill-after=30s 15m ./scripts/local/ci_local.sh full
+status=$?
+if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+  echo "pre-push: ci_local.sh full ran past 15m and was killed — something is" >&2
+  echo "          wedged, not slow. Check for a leftover test binary holding a" >&2
+  echo "          GPU device (ps -ef | grep target/release/deps)." >&2
+fi
+exit "$status"

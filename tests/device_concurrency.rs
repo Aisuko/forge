@@ -1,9 +1,11 @@
-//! Creating devices from several threads at once must not hang.
+//! Creating and destroying devices from several threads at once must not hang.
 //!
 //! Concurrent `request_adapter` + `request_device` wedges inside the driver —
 //! parallel `Device::wgpu()` calls, doing no compute at all, are what hung a
 //! full `cargo test` roughly one run in four before creation was serialized.
-//! These tests are that reproducer, kept where a regression will trip over it.
+//! Teardown is the same lock from the other side, and it hung the surprisal
+//! suite the same way after creation alone was fixed. These tests are both
+//! reproducers, kept where a regression will trip over them.
 //!
 //! Each one joins through `recv_timeout`, so a regression *fails* after two
 //! minutes rather than hanging the suite with no message. The wedged threads
@@ -13,7 +15,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use forge::Device;
+use forge::{Device, Tensor, ops};
 
 /// Generous: this is a deadlock detector, not a performance budget. Cold
 /// device creation on a loaded machine is seconds, not minutes.
@@ -107,6 +109,40 @@ fn sync_and_async_creators_interleaved() {
         }
     });
     assert_unanimous(&made, "mixed");
+}
+
+/// Creation racing *teardown*, which the two tests above cannot reach: they
+/// create and drop empty contexts, and an empty context has nothing to tear
+/// down but the device itself.
+///
+/// Destroying a context that has done real work is a different animal —
+/// compiled pipelines, pooled buffers, a submitted encoder, and only then
+/// `vkDestroyDevice`. That teardown holds a driver lock the creating thread
+/// needs, and until `WgpuContext`'s `Drop` took the same gate as creation, a
+/// thread doing it while a neighbour created a device hung the process outright.
+/// The compute here is what staggers the threads so the two phases overlap; the
+/// numbers it produces do not matter, `op_parity` owns those.
+#[test]
+fn devices_are_created_used_and_dropped_in_parallel() {
+    let made = race("busy", |_| {
+        let device = Device::wgpu().ok()?;
+        let n = 4096;
+        let x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.01).sin()).collect();
+        let t = Tensor::from_f32(&x, [n], &device).unwrap();
+        // A scope, so this is one submit of several kernels — the encoder and
+        // the pipelines it used are live state the drop below has to unwind.
+        let y = {
+            let _scope = device.dispatch_scope();
+            let mut y = t.clone();
+            for _ in 0..4 {
+                y = ops::gelu(&ops::add(&y, &t).unwrap()).unwrap();
+            }
+            y.to_vec_f32().unwrap()
+        };
+        assert_eq!(y.len(), n, "the dispatch did not produce a full result");
+        Some(device)
+    });
+    assert_unanimous(&made, "busy");
 }
 
 /// The gate must not cost `wgpu_async` its `Send`, or nobody can `tokio::spawn`

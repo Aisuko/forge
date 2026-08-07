@@ -33,7 +33,8 @@ source tools/shared/tailwind.sh
 "$TW" -i tools/shared/input.css -o "$DIST/assets/app.css" --minify
 
 echo "== pages"
-cp docs/src/index.html docs/src/demo.js docs/src/attention.js docs/src/decision.js "$DIST/"
+cp docs/src/index.html docs/src/demo.js docs/src/attention.js docs/src/decision.js \
+   docs/src/cost.js "$DIST/"
 cp tools/council/web/council.html tools/council/web/council.js "$DIST/"
 cp tools/surprise/web/react.html tools/surprise/web/react.js "$DIST/"
 cp tools/shared/favicon.svg "$DIST/"

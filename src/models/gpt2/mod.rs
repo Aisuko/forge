@@ -1175,15 +1175,46 @@ impl Gpt2 {
         Ok(nll.iter().sum::<f32>() / t as f32)
     }
 
-    #[cfg(feature = "train")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     /// One training forward + backward on a single sequence: mean
     /// cross-entropy of `targets` given `input`, and gradients for every
-    /// parameter in `param_specs` order. Batch by accumulating grads over calls.
+    /// parameter in `param_specs` order. A thin call to
+    /// [`Gpt2::loss_grads_batched`] with a batch of one.
+    #[cfg(feature = "train")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     pub fn loss_grads(
         &self,
         input: &[u32],
         targets: &[u32],
+        dropout_p: f32,
+        seed: u32,
+    ) -> Result<(f32, Vec<Tensor>)> {
+        self.loss_grads_batched(input, targets, input.len(), dropout_p, seed)
+    }
+
+    /// [`Gpt2::loss_grads`] over a real batch: `input` and `targets` hold
+    /// `input.len() / seq_len` sequences of `seq_len` tokens, concatenated.
+    /// The loss is the mean over every token, and the gradients are what
+    /// running the sequences separately and averaging would have produced.
+    ///
+    /// This is the axis that makes a training step fast. Sequences are
+    /// independent, so gradient accumulation — a loop of single-sequence
+    /// passes, summed — is *arithmetically* the same thing, and that is how
+    /// forge did it. It is not the same thing on a GPU: it multiplies the
+    /// kernel launches by the batch size and leaves every matmul at m =
+    /// seq_len, which on an RTX A5000 is a third of the throughput the same
+    /// matmul reaches when the batch is folded into its rows.
+    ///
+    /// Folding is all this does. There is no rank-4 tensor anywhere below: the
+    /// position-wise layers see `batch * seq_len` rows and cannot tell the
+    /// difference, and attention's batch rides in the same leading axis its
+    /// heads already use. See [`ops::split_heads_batched`].
+    #[cfg(feature = "train")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
+    pub fn loss_grads_batched(
+        &self,
+        input: &[u32],
+        targets: &[u32],
+        seq_len: usize,
         dropout_p: f32,
         seed: u32,
     ) -> Result<(f32, Vec<Tensor>)> {
@@ -1192,14 +1223,26 @@ impl Gpt2 {
                 "loss_grads needs equal, non-empty input/target lengths".into(),
             ));
         }
-        if input.len() > self.config.n_ctx {
+        if seq_len == 0 || !input.len().is_multiple_of(seq_len) {
             return Err(ForgeError::Shape(format!(
-                "sequence length {} exceeds n_ctx {}",
-                input.len(),
+                "loss_grads: {} tokens is not a whole number of {seq_len}-token sequences",
+                input.len()
+            )));
+        }
+        if seq_len > self.config.n_ctx {
+            return Err(ForgeError::Shape(format!(
+                "sequence length {seq_len} exceeds n_ctx {}",
                 self.config.n_ctx
             )));
         }
+        let batch = input.len() / seq_len;
         let device = self.emb.wpe.device();
+        // One scope for the whole micro-step, exactly as `forward` does for
+        // inference. Without it every kernel was its own `queue.submit` — 335
+        // of them per micro-step on the char model, and at ~50 µs of driver
+        // round trip each that was the entire step. The `nll` readback partway
+        // through flushes and the scope carries on; see `WgpuContext::scope`.
+        let _scope = device.dispatch_scope();
         let t = input.len();
         let ids_t = Tensor::from_u32(input, [t], &device)?;
         let tgt_t = Tensor::from_u32(targets, [t], &device)?;
@@ -1223,7 +1266,7 @@ impl Gpt2 {
                 .wrapping_add(site.wrapping_mul(0x85EB_CA77))
         };
 
-        let mut x = tape.embedding(&ids_t, &pvars[0], &pvars[1], 0)?;
+        let mut x = tape.embedding_batched(&ids_t, &pvars[0], &pvars[1], 0, batch)?;
         x = tape.dropout(&x, dropout_p, dseed())?;
         for i in 0..self.config.n_layer {
             let base = 2 + i * 12;
@@ -1231,7 +1274,7 @@ impl Gpt2 {
                 std::array::from_fn(|j| &pvars[base + j]);
             let a = tape.layernorm(&x, g1, b1, eps)?;
             let qkv = tape.matmul(&a, wqkv, Some(bqkv), MatmulSpec::default())?;
-            let (q, k, v) = tape.split_heads(&qkv, n_head)?;
+            let (q, k, v) = tape.split_heads_batched(&qkv, n_head, batch)?;
             let att = tape.matmul(
                 &q,
                 &k,
@@ -1245,7 +1288,7 @@ impl Gpt2 {
             let probs = tape.softmax(&att, true, 0)?;
             let probs = tape.dropout(&probs, dropout_p, dseed())?;
             let y = tape.matmul(&probs, &v, None, MatmulSpec::default())?;
-            let y = tape.merge_heads(&y)?;
+            let y = tape.merge_heads_batched(&y, batch)?;
             let y = tape.matmul(&y, wproj, Some(bproj), MatmulSpec::default())?;
             let y = tape.dropout(&y, dropout_p, dseed())?;
             x = tape.add(&x, &y)?;

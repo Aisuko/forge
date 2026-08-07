@@ -34,9 +34,14 @@ fn reduce_sum(li: u32, v: f32) -> f32 {
 @compute @workgroup_size(256)
 fn main(
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
     @builtin(local_invocation_index) li: u32,
 ) {
-    let r = wid.x;
+    // One workgroup per row, laid out 2-D: a batched training step has more
+    // rows than the 65535 a single grid dimension may hold (64 sequences x 6
+    // heads x 256 queries is 98304). See `row_grid`.
+    let r = wid.y * nwg.x + wid.x;
+    if (r >= p.rows) { return; }
     let base = r * p.cols;
     let nf = f32(p.cols);
 

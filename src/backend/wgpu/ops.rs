@@ -36,6 +36,22 @@ fn bind(s: &WgpuStorage, numel: usize) -> (&wgpu::Buffer, usize, usize) {
     (&s.buf, s.offset * 4, numel * 4)
 }
 
+/// A grid of one workgroup per row, folded into two dimensions.
+///
+/// The row-per-workgroup kernels — softmax, layernorm, and their backwards —
+/// used a flat `(rows, 1, 1)`. A batched training step overruns it: 64
+/// sequences x 6 heads x 256 query positions is 98304 attention rows against a
+/// 65535 per-dimension limit, and wgpu rejects the dispatch. The kernels
+/// recover the row as `wid.y * nwg.x + wid.x` and bound-check it, so the
+/// rounding up here is harmless.
+fn row_grid(rows: usize) -> (u32, u32, u32) {
+    if rows <= 65535 {
+        (rows.max(1) as u32, 1, 1)
+    } else {
+        (65535, rows.div_ceil(65535) as u32, 1)
+    }
+}
+
 pub fn add(a: &WgpuStorage, b: &WgpuStorage, n: usize) -> WgpuStorage {
     let out = alloc(&a.ctx, n);
     a.ctx.dispatch(
@@ -137,6 +153,25 @@ pub fn matmul_into(
         n_out as u32,
         trans_a as u32,
     ];
+    if use_gemv(m, n, batch) {
+        gemv_into(
+            out,
+            a,
+            b,
+            bias_binding,
+            a_numel,
+            b_numel,
+            &params,
+            m,
+            k,
+            n,
+            batch,
+            alpha,
+            n_off,
+            n_out,
+        );
+        return;
+    }
     ctx.dispatch(
         "matmul",
         &params,
@@ -146,7 +181,137 @@ pub fn matmul_into(
             bias_binding,
             bind(out, batch * m * n_out),
         ],
-        (n.div_ceil(16) as u32, m.div_ceil(16) as u32, batch as u32),
+        // One workgroup per 64x64 output block — see shaders/matmul.wgsl.
+        (n.div_ceil(64) as u32, m.div_ceil(64) as u32, batch as u32),
+    );
+}
+
+/// Rows one `gemv` workgroup carries — must match `MROWS` in gemv.wgsl.
+const GEMV_ROWS: usize = 16;
+
+/// Which of the two matmul kernels this shape goes to.
+///
+/// Measured, not assumed. Both branches are the same choice seen twice: the
+/// tiled GEMM claims a 64x64 output block per workgroup, so a shape that does
+/// not have ~64 such blocks leaves most of an RTX A5000 idle and the GEMM
+/// flattens onto a floor — a 1536x384 projection costs the same ~290 us at
+/// m = 24 as at m = 256. `gemv` splits k instead, manufacturing workgroups the
+/// shape does not have, and pays one extra pass over B per 16 rows.
+///
+/// So: take `gemv` when the rows alone are too few (decode is m = 1), and take
+/// it when the whole grid is too small. Stop at 16 row blocks, past which those
+/// extra passes over B cost more than the idle SMs did.
+fn use_gemv(m: usize, n: usize, batch: usize) -> bool {
+    if m <= 4 * GEMV_ROWS {
+        return true;
+    }
+    let gemm_groups = n.div_ceil(64) * m.div_ceil(64) * batch;
+    gemm_groups < GEMV_TARGET_GROUPS / 4 && m <= 16 * GEMV_ROWS
+}
+
+/// Columns one `gemv` workgroup covers — must match `COLS` in gemv.wgsl.
+const GEMV_COLS: usize = 64;
+
+/// Shallowest k-slice worth giving a split its own workgroup.
+const GEMV_MIN_SPLIT_K: usize = 32;
+
+/// How many workgroups to aim a split-k matvec at. Around 4x an RTX A5000's 64
+/// SMs, which is enough to cover the tail without making the reduction pass
+/// wider than the work it saves.
+const GEMV_TARGET_GROUPS: usize = 256;
+
+/// How many ways to split k for a matvec of this shape.
+///
+/// The column blocks alone are the natural parallelism, and for a narrow output
+/// there are far too few of them — a 384-column projection is six. This tops
+/// them up to [`GEMV_TARGET_GROUPS`]. Row blocks count toward the total for the
+/// same reason they cost a pass over B: they are already real workgroups.
+fn gemv_split(m: usize, k: usize, n: usize, batch: usize) -> usize {
+    let blocks = n.div_ceil(GEMV_COLS) * m.div_ceil(GEMV_ROWS) * batch;
+    let want = GEMV_TARGET_GROUPS.div_ceil(blocks.max(1));
+    want.clamp(1, (k / GEMV_MIN_SPLIT_K).max(1))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gemv_into(
+    out: &WgpuStorage,
+    a: &WgpuStorage,
+    b: &WgpuStorage,
+    bias_binding: (&wgpu::Buffer, usize, usize),
+    a_numel: usize,
+    b_numel: usize,
+    matmul_params: &[u32; 12],
+    m: usize,
+    k: usize,
+    n: usize,
+    batch: usize,
+    alpha: f32,
+    n_off: usize,
+    n_out: usize,
+) {
+    let ctx = &a.ctx;
+    let nsplit = gemv_split(m, k, n, batch);
+    let nrowblk = m.div_ceil(GEMV_ROWS);
+    let mut params = [0u32; 16];
+    params[..12].copy_from_slice(matmul_params);
+    params[12] = nsplit as u32;
+    params[13] = nrowblk as u32;
+
+    let grid = (
+        n.div_ceil(GEMV_COLS) as u32,
+        (nsplit * nrowblk) as u32,
+        batch as u32,
+    );
+    if nsplit == 1 {
+        ctx.dispatch(
+            "gemv",
+            &params,
+            &[
+                bind(a, a_numel),
+                bind(b, b_numel),
+                bias_binding,
+                bind(out, batch * m * n_out),
+            ],
+            grid,
+        );
+        return;
+    }
+
+    // Partials are [nsplit][batch][m][n] — packed at stride n, not n_out: a
+    // column-chunked head writes its chunk contiguously here and only spreads
+    // out across n_out in the reduction.
+    let per_split = batch * m * n;
+    let partials = alloc(ctx, nsplit * per_split);
+    ctx.dispatch(
+        "gemv",
+        &params,
+        &[
+            bind(a, a_numel),
+            bind(b, b_numel),
+            bias_binding,
+            bind(&partials, nsplit * per_split),
+        ],
+        grid,
+    );
+    let rparams = [
+        m as u32,
+        n as u32,
+        batch as u32,
+        nsplit as u32,
+        matmul_params[7], // has_bias
+        alpha.to_bits(),
+        n_off as u32,
+        n_out as u32,
+    ];
+    ctx.dispatch(
+        "gemv_reduce",
+        &rparams,
+        &[
+            bind(&partials, nsplit * per_split),
+            bias_binding,
+            bind(out, batch * m * n_out),
+        ],
+        linear_grid(per_split),
     );
 }
 
@@ -173,7 +338,7 @@ pub fn softmax(
             0,
         ],
         &[bind(x, n), bind(&out, n)],
-        (rows as u32, 1, 1),
+        row_grid(rows),
     );
     out
 }
@@ -197,7 +362,7 @@ pub fn layernorm(
             bind(beta, cols),
             bind(&out, n),
         ],
-        (rows as u32, 1, 1),
+        row_grid(rows),
     );
     out
 }
@@ -215,6 +380,7 @@ pub fn embedding(
     c: usize,
     n_ctx: usize,
     pos: usize,
+    seq: usize,
 ) -> WgpuStorage {
     let ctx = &ids.ctx;
     let n = t * c;
@@ -238,7 +404,7 @@ pub fn embedding(
                 wpe.is_some() as u32,
                 row_start as u32,
                 (row_start + rows) as u32,
-                0,
+                seq as u32,
                 0,
             ],
             &[
@@ -276,28 +442,34 @@ pub fn kv_append(
 
 pub fn split_heads(
     qkv: &WgpuStorage,
+    b: usize,
     t: usize,
     c: usize,
     h: usize,
 ) -> (WgpuStorage, WgpuStorage, WgpuStorage) {
     let ctx = &qkv.ctx;
-    let n = t * c;
+    let n = b * t * c;
     let (q, k, v) = (alloc(ctx, n), alloc(ctx, n), alloc(ctx, n));
     ctx.dispatch(
         "split_heads",
-        &[t as u32, c as u32, h as u32, 0],
-        &[bind(qkv, t * 3 * c), bind(&q, n), bind(&k, n), bind(&v, n)],
+        &[t as u32, c as u32, h as u32, b as u32],
+        &[
+            bind(qkv, b * t * 3 * c),
+            bind(&q, n),
+            bind(&k, n),
+            bind(&v, n),
+        ],
         linear_grid(n),
     );
     (q, k, v)
 }
 
-pub fn merge_heads(x: &WgpuStorage, t: usize, c: usize, h: usize) -> WgpuStorage {
-    let n = t * c;
+pub fn merge_heads(x: &WgpuStorage, b: usize, t: usize, c: usize, h: usize) -> WgpuStorage {
+    let n = b * t * c;
     let out = alloc(&x.ctx, n);
     x.ctx.dispatch(
         "merge_heads",
-        &[t as u32, c as u32, h as u32, 0],
+        &[t as u32, c as u32, h as u32, b as u32],
         &[bind(x, n), bind(&out, n)],
         linear_grid(n),
     );
@@ -324,7 +496,7 @@ pub fn softmax_bwd(y: &WgpuStorage, dy: &WgpuStorage, rows: usize, cols: usize) 
         "softmax_bwd",
         &[rows as u32, cols as u32, 0, 0],
         &[bind(y, n), bind(dy, n), bind(&out, n)],
-        (rows as u32, 1, 1),
+        row_grid(rows),
     );
     out
 }
@@ -351,7 +523,7 @@ pub fn layernorm_bwd(
             bind(&dx, n),
             bind(&stats, rows * 2),
         ],
-        (rows as u32, 1, 1),
+        row_grid(rows),
     );
     let dgamma = alloc(ctx, cols);
     let dbeta = alloc(ctx, cols);
@@ -438,27 +610,43 @@ pub fn dropout(x: &WgpuStorage, n: usize, p: f32, scale: f32, seed: u32) -> Wgpu
     out
 }
 
-pub fn unsplit_head(d: &WgpuStorage, t: usize, c: usize, h: usize, which: usize) -> WgpuStorage {
-    let n = t * c;
+pub fn unsplit_head(
+    d: &WgpuStorage,
+    b: usize,
+    t: usize,
+    c: usize,
+    h: usize,
+    which: usize,
+) -> WgpuStorage {
+    let n = b * t * c;
     // The kernel writes one third and needs the other two to be zero, so this
     // is the one op that must not take a recycled buffer. `alloc` here silently
     // corrupts wte gradients — it did, before `alloc_zeroed` existed.
-    let out = alloc_zeroed(&d.ctx, t * 3 * c);
+    let out = alloc_zeroed(&d.ctx, b * t * 3 * c);
     d.ctx.dispatch(
         "unsplit_heads",
-        &[t as u32, c as u32, h as u32, which as u32],
-        &[bind(d, n), bind(&out, t * 3 * c)],
+        &[
+            t as u32,
+            c as u32,
+            h as u32,
+            which as u32,
+            b as u32,
+            0,
+            0,
+            0,
+        ],
+        &[bind(d, n), bind(&out, b * t * 3 * c)],
         linear_grid(n),
     );
     out
 }
 
-pub fn unmerge_heads(dy: &WgpuStorage, t: usize, c: usize, h: usize) -> WgpuStorage {
-    let n = t * c;
+pub fn unmerge_heads(dy: &WgpuStorage, b: usize, t: usize, c: usize, h: usize) -> WgpuStorage {
+    let n = b * t * c;
     let out = alloc(&dy.ctx, n);
     dy.ctx.dispatch(
         "unmerge_heads",
-        &[t as u32, c as u32, h as u32, 0],
+        &[t as u32, c as u32, h as u32, b as u32],
         &[bind(dy, n), bind(&out, n)],
         linear_grid(n),
     );

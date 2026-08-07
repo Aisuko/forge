@@ -41,6 +41,21 @@ impl Gate {
         Lock { gate: self }
     }
 
+    /// Wait for the gate, blocking the calling thread.
+    ///
+    /// For `Drop`, which cannot await: destroying a device has to be serialized
+    /// against creating one (see `WgpuContext`'s `Drop`), and a destructor has
+    /// no executor to yield to. Parking here is safe because the inner mutex is
+    /// never held across an `.await` — the holder is always making progress in
+    /// the driver, not waiting on this thread.
+    ///
+    /// Native only: the browser has one thread, which must not block, and no
+    /// second thread to race with.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn lock_blocking(&self) -> Guard<'_> {
+        pollster::block_on(self.lock())
+    }
+
     /// The inner mutex guards no user data, so a panicking holder must not
     /// poison every later creator.
     fn state(&self) -> std::sync::MutexGuard<'_, State> {

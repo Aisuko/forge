@@ -72,11 +72,14 @@ impl AdamW {
             )));
         }
         self.step += 1;
-        let mut total_sq = 0.0f32;
-        for g in grads {
-            total_sq += ops::sumsq(g)?;
-        }
-        let norm = total_sq.sqrt();
+        // One scope for the whole update: the reductions below, and then every
+        // scale and AdamW kernel, go out in one command buffer instead of one
+        // submit each. Unscoped, GPT-2 small's optimizer step was 300+ submits.
+        let _scope = params.first().map(|p| p.device()).and_then(|d| match d {
+            crate::device::Device::Wgpu(ctx) => Some(ctx.scope()),
+            crate::device::Device::Cpu => None,
+        });
+        let norm = ops::sumsq_all(grads)?.iter().sum::<f32>().sqrt();
         let rescale = match self.opts.clip {
             Some(c) if norm > c && norm > 0.0 => Some(c / norm),
             _ => None,
