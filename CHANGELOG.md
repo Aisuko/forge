@@ -4,7 +4,12 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-08-07
+
+**Breaking**: surprisal leaves the runtime for `tools/surprise`. Alongside it,
+`.fzm` q4 checkpoints — the shipped site drops from 61 MB to 13.5 MB — the
+Surprise page's self-resolving reveal, and a training step with a real batch
+axis under it instead of a loop of single sequences.
 
 ### Added
 
@@ -46,6 +51,45 @@ All notable changes to this project are recorded here. The format follows
   `forge::serialization::checkpoint_in_dir` resolves a model directory to
   whichever of `model.fzm` / `model.safetensors` is there.
 - `examples/to_fzm.rs` — the one-shot converter both ship scripts now call.
+
+- **`Gpt2::loss_grads_batched`** — `batch` sequences of `seq_len` tokens,
+  concatenated, in one forward/backward. The loss is the mean over every token
+  and the gradients are what running the sequences separately and averaging
+  would have produced; `tests/training.rs` asserts exactly that, on both
+  devices. `Gpt2::loss_grads` is now a thin call to it with a batch of one.
+
+  Gradient accumulation is *arithmetically* the same thing, and is how forge
+  did it. It is not the same thing on a GPU: it multiplies the kernel launches
+  by the batch size and pins every matmul at m = `seq_len`. Folding costs no
+  rank-4 tensor anywhere — position-wise layers see `batch * seq_len` rows and
+  cannot tell, and the batch rides in the leading axis attention's heads
+  already use.
+- `ops::split_heads_batched` / `merge_heads_batched` and their backwards, the
+  matching `Tape::*_batched` and `Tape::embedding_batched`, and
+  `Embedding::forward_batched` — the batch axis threaded through the four WGSL
+  kernels and the tape. `batch = 1` reproduces the single-sequence path.
+- **`--micro-batch` on `examples/train_shakespeare.rs`**: how much of `--accum`
+  goes through one pass, the remainder still accumulated. A pass holds every
+  activation on its tape, so this trades memory for speed, and only up to a
+  point. Measured on an RTX A5000, s/step: 1 → 0.88, 4 → 0.48, 8 → 0.47,
+  16 → 0.53, 32 → 0.61, 64 → 0.62 — past 8 the attention probabilities alone
+  are `[batch*6, 256, 256]` and the memory traffic costs more than the wider
+  matmuls save. The char default is 8, so the effective batch of 64 is now
+  8 passes rather than 64.
+- **`shaders/gemv.wgsl` and `gemv_reduce.wgsl`**, a tall-skinny matmul for the
+  small-m shapes the tiled GEMM cannot serve. KV-cached decode runs every
+  projection at m = 1, where a 64-row output block discards 63/64 of its
+  arithmetic: 13 GFLOP/s. B is read exactly once regardless of row count — a
+  thread owns a column for the kernel's life — and k is split across
+  workgroups, with a reduce pass when there is more than one, because a
+  384-column projection is otherwise six workgroups on a 64-SM card.
+- A **cost panel on the landing page** (`docs/src/cost.js`): live tokens/s with
+  a rolling sparkline, the adapter's name, prefill time, on-disk size against
+  the fp32 equivalent, and where the parameters sit across embeddings,
+  attention and MLP.
+- `tests/device_concurrency.rs` gains a create-use-drop race — the earlier
+  tests create and drop *empty* contexts, which have nothing to tear down but
+  the device itself.
 
 ### Changed
 
@@ -95,6 +139,36 @@ All notable changes to this project are recorded here. The format follows
   the load is still shared between `index.html` and `react.html`), and ~40 lines
   of duplicated `load_char` marshalling and accessors. Council settled the same
   bill in 0.3.0.
+
+- **`shaders/matmul.wgsl` is register-tiled**: a 64×64 output block per
+  workgroup, 4×4 outputs per thread, over 16-deep k-tiles. The predecessor gave
+  each thread one output, so every FMA needed two workgroup-memory reads — a
+  ratio that pins the kernel to shared-memory bandwidth, and it measured
+  1.1 TFLOP/s against the A5000's 27.8 TFLOP/s fp32 peak. A 4×4 register block
+  amortizes 8 reads over 16 FMAs and issues them `vec4`-shaped. `asub`'s row
+  stride is padded to 17: at 16 the four rows a thread reads land in one bank.
+- **Staging buffers are pooled** by power-of-two size class. Creating one costs
+  ~1.4 ms on an A5000 — host-visible memory, allocated and mapped by the driver
+  — against ~60 µs for the submit and fence wait it exists to serve, so before
+  this the allocation *was* the decode step. Kernel-parameter uniforms are
+  cached by contents alongside it.
+- **`WgpuContext::drop` takes the same process-wide gate as creation.** 0.4.0
+  serialized creation and left teardown ungated, which is the same driver lock
+  from the other side: a thread inside `vkDestroyDevice` holds it while a
+  neighbour creating a device blocks on it, and nothing times out. That is the
+  `cargo test` that never returns, and the `git push` that hangs on the hook
+  running it. The gate is held as the *last* field rather than in the `Drop`
+  body, so it outlives `device` and `queue`.
+- The wgpu instance requests `Backends::PRIMARY` rather than the default
+  `all()`. The default also builds a GLES instance on every creation — probing
+  EGL and Wayland, printing `XDG_RUNTIME_DIR is invalid or not set` on a
+  headless box, and giving every context a second driver stack to tear down in
+  the library where teardown parks. PRIMARY still covers Vulkan, Metal, DX12
+  and BROWSER_WEBGPU; the cost is the fallbacks, WebGL2 and native GL.
+- `.githooks/pre-push` bounds `ci_local.sh full` at 15 minutes. The failure it
+  guards is not a red test but a wedged GPU driver, which turns an unbounded
+  hook into a push that hangs for hours printing nothing; `full` is ~1m10s
+  warm, so 15 minutes is a wedge, not a slow machine.
 
 ### Removed
 
@@ -397,6 +471,7 @@ no CUDA toolchain and no Python interpreter in the loop.
 CPU↔WGPU parity to a max logit difference of 8.4e-5, and Forge↔HuggingFace
 transformers to 1.75e-4, on GPT-2 124M weights on an NVIDIA RTX A5000.
 
+[0.5.0]: https://github.com/Aisuko/forge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Aisuko/forge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Aisuko/forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Aisuko/forge/releases/tag/v0.2.0
