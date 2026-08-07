@@ -32,7 +32,7 @@ name = "forge"
 crate-type = ["rlib", "cdylib"]
 
 [workspace]
-members = ["tools/council", "tools/forge-top"]
+members = ["tools/council", "tools/forge-top", "tools/surprise"]
 
 # `train` is not a default feature, so docs.rs needs all-features to show it.
 # The `docsrs` cfg turns on the doc(cfg(...)) badges in src/lib.rs.

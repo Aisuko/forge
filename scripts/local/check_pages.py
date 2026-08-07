@@ -134,12 +134,31 @@ def check_surprise(b, base):
     p = Page(b, f"{base}/react.html", "react")
     assert p.gpu(), "no WebGPU adapter"
     # The three passages are scored on load, one forward pass each, and every
-    # character becomes a tinted span. Wait for all three: the selection
-    # listener is only registered once the last one is painted.
+    # character becomes a span. Wait for all three: the replay button is only
+    # enabled once the last one is laid out.
     p.until("""() => {
                 const bodies = [...document.querySelectorAll('#react-text [data-scored]')];
                 return bodies.length === 3 && bodies.every(b => b.querySelector('[data-i]'));
             }""", note="the passages were never scored")
+    # Then drive the reveal from the top, rather than racing whichever part of
+    # the automatic one is still running: press the button, and wait for every
+    # position to stop spinning. Nothing here waits on the model — the replay
+    # is animation over a pass that already finished — so a reveal that never
+    # settles is a bug in the loop, not a slow GPU.
+    p.pg.click("#react-replay")
+    p.until("() => document.querySelectorAll('#react-text .tok-spin').length > 0",
+            note="pressing Read it again resolved nothing")
+    p.until("""() => {
+                const spans = [...document.querySelectorAll('#react-text [data-i]')];
+                return spans.length > 100
+                    && !spans.some(s => s.classList.contains('tok-spin'));
+            }""", note="the reveal never finished")
+    # Hovering a resolved character fills the panel with the candidates the
+    # flicker was cycling through — the loop the old grey line could not close.
+    p.pg.hover("#react-text [data-scored] [data-i='12']")
+    p.until("""() => [...document.querySelectorAll('#react-bars .bar-row')]
+                        .filter(r => !r.hidden).length >= 8""",
+            note="the readout panel stayed empty")
     # Then select inside one, which is the page's real interaction: the same
     # characters rescored with none of the context before them.
     p.pg.evaluate("""() => {

@@ -1,11 +1,21 @@
 /**
- * The reactive page: select text, and the model tints it by how surprised it
- * was to find those characters there.
+ * The reactive page: the model reads text, and every character resolves in the
+ * time the model needed to be sure of it.
  *
- * Everything drawn comes from one call — `WasmGpt2.surprisal(text)`, which runs
- * a single forward pass and returns per-position bits, plus the character the
- * model would have chosen instead. Nothing here re-derives a probability in
- * JavaScript; the only thing this file decides is colour.
+ * Everything drawn comes from one call — `WasmSurprise.surprisal(text, k)`,
+ * which runs a single forward pass and returns, per position, the surprisal in
+ * bits and the k characters the model actually weighed there. Nothing here
+ * re-derives a probability in JavaScript; this file decides colour and timing,
+ * and both are read straight off those numbers.
+ *
+ * **The reveal is a replay, and the page says so.** The pass has already
+ * finished — in ~15 ms — before the first frame is drawn; the flicker is that
+ * one result played back, with each position's lock time set by its own
+ * surprisal and each flickered character drawn from its own top-k. No
+ * inference happens while a character is spinning, and nothing about the
+ * animation staggers left to right, because nothing was computed left to
+ * right: all positions are scored in the same pass, so all of them start
+ * together and only their certainty separates them.
  *
  * Three constraints shape the code, and all three are about the model being
  * genuinely local rather than behind a network call:
@@ -15,13 +25,40 @@
  *  - never reload the model, whatever happens.
  */
 
-import init, { WasmGpt2 } from "./forge/forge.js";
+import init, { WasmSurprise } from "./forge-surprise/forge_surprise.js";
 
 const $ = (id) => document.getElementById(id);
 
 /** Bits at which the scale saturates. log2(65) ≈ 6.02 is the char model's
  *  uniform-guess entropy, so 6 is "it had no idea" and makes a natural top. */
 const MAX_BITS = 6;
+
+/** Alternatives kept per position. Eight is enough for a spin to look
+ *  considered and short enough to read as a panel of bars. */
+const K = 8;
+
+/** Below this the model was as good as certain — 0.3 bits is p ≈ 0.81 — and a
+ *  frame of manufactured doubt would misrepresent it. These lock immediately,
+ *  which is why the mass of a passage goes solid at once. */
+const SNAP_BITS = 0.3;
+
+/** Lock times in ms, spanning SNAP_BITS..MAX_BITS. */
+const REVEAL = { min: 120, max: 1100 };
+
+/** Shorter for the two surfaces a reader retriggers continuously — the
+ *  selection panel under a drag, the text box under typing. A full-length
+ *  reveal per keystroke would be punishing. */
+const RETRIGGER_REVEAL = { min: 80, max: 600 };
+
+/** Swap interval, eased from fast to slow, so a position decelerates into
+ *  place rather than stopping dead. */
+const SWAP = { from: 50, to: 180 };
+
+/** The blanket rule in input.css cannot reach a requestAnimationFrame loop,
+ *  so the reveal has to honour the setting itself: it jumps to the last frame.
+ *  Read live rather than once, so changing the OS setting takes effect on the
+ *  next replay. */
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 /** How long the reader has to stop moving before we ask the GPU anything. */
 const DEBOUNCE_MS = 150;
@@ -62,6 +99,9 @@ const state = {
   timer: null,
   /** The element whose text is currently scored, so hover can find its data. */
   scored: new WeakMap(),
+  /** Every element that currently holds a scored result, so "Read it again"
+   *  can replay all of them without a second forward pass. */
+  targets: new Set(),
 };
 
 const el = {
@@ -72,7 +112,7 @@ const el = {
     if (frac !== null) $("react-progress").style.width = `${(frac * 100).toFixed(0)}%`;
   },
   stat: (t) => ($("react-stat").textContent = t),
-  readout: (t) => ($("react-readout").textContent = t),
+  at: (t) => ($("react-at").textContent = t),
   warn: (t) => {
     const w = $("react-warn");
     w.hidden = !t;
@@ -149,7 +189,7 @@ async function load() {
   el.progress(null);
 
   el.status("requesting a WebGPU adapter and uploading weights…");
-  const m = await WasmGpt2.load_char(bytes, config, vocab);
+  const m = await WasmSurprise.load_char(bytes, config, vocab);
   $("react-device").textContent = m.device_info();
   el.status(`ready — ${m.vocab_size()}-character vocabulary, ${m.n_layer()} layers`);
   return m;
@@ -165,7 +205,12 @@ async function load() {
  * the reader has already left — the single most visible way an interactive
  * model demo looks broken.
  */
-async function score(text, target, gen, { warns = false, stat = el.stat, onDone } = {}) {
+async function score(
+  text,
+  target,
+  gen,
+  { warns = false, stat = el.stat, onDone, pace = REVEAL } = {},
+) {
   if (!state.model || !text.trim()) return;
 
   const unsupported = state.model.unsupported_chars(text);
@@ -191,7 +236,7 @@ async function score(text, target, gen, { warns = false, stat = el.stat, onDone 
   const t0 = performance.now();
   let out;
   try {
-    out = await state.model.surprisal(text);
+    out = await state.model.surprisal(text, K);
   } catch (e) {
     el.status(`scoring failed: ${e}`);
     return;
@@ -199,7 +244,7 @@ async function score(text, target, gen, { warns = false, stat = el.stat, onDone 
   if (gen !== state.generation) return; // a newer selection won
 
   const ms = performance.now() - t0;
-  paint(target, out);
+  reveal(layout(target, out, pace), pace);
 
   // Mean over positions 1.. — position 0 has no context and is always 0.
   const bits = out.bits;
@@ -213,37 +258,223 @@ async function score(text, target, gen, { warns = false, stat = el.stat, onDone 
   if (onDone) onDone(mean, bits.length);
 }
 
-function paint(target, out) {
+/* ── the reveal ──────────────────────────────────────────────────────────
+ *
+ * The old paint() built the finished picture in one shot. It is now two steps:
+ * layout() puts the characters on the page untinted, and reveal() resolves
+ * them. What settles is exactly what paint() used to draw.
+ */
+
+const isSpace = (s) => /^\s+$/.test(s);
+
+/**
+ * Build the spans and stash everything the reveal and the hover panel need.
+ * No tint yet — a finished heat map cannot distinguish a character the model
+ * was certain of from one it was torn about, and that difference is the thing
+ * worth showing.
+ */
+function layout(target, out, pace = REVEAL) {
   const frag = document.createDocumentFragment();
-  const { tokens, bits, top, topP } = out;
-  for (let i = 0; i < tokens.length; i++) {
+  const spans = [];
+  for (let i = 0; i < out.tokens.length; i++) {
     const span = document.createElement("span");
-    span.textContent = tokens[i];
+    span.textContent = out.tokens[i];
     span.dataset.i = String(i);
-    // Newlines carry no useful tint and a coloured block at the end of a line
-    // reads as a rendering bug rather than as information.
-    if (!/^\s+$/.test(tokens[i])) {
-      span.style.background = tint(bits[i]);
-      span.style.borderRadius = "2px";
-    }
     frag.appendChild(span);
+    spans.push(span);
   }
   target.replaceChildren(frag);
-  state.scored.set(target, { tokens, bits, top, topP });
+  // A fresh object identity per score: the frame loop compares against it to
+  // notice that a newer result has replaced the one it was animating.
+  const data = { ...out, spans, target, pace };
+  state.scored.set(target, data);
+  state.targets.add(target);
+  return data;
 }
+
+/**
+ * The characters position `i` may flicker through: the model's own top-k with
+ * whitespace dropped — a blinking blank reads as a rendering fault — and the
+ * survivors renormalised, so a draw is still in the proportions the model gave
+ * them.
+ */
+function candidates(d, i) {
+  const out = [];
+  let mass = 0;
+  for (let j = 0; j < d.k; j++) {
+    const ch = d.alt[i * d.k + j];
+    const p = d.altP[i * d.k + j];
+    if (!ch || isSpace(ch) || !(p > 0)) continue;
+    out.push({ ch, p });
+    mass += p;
+  }
+  if (mass > 0) for (const c of out) c.p /= mass;
+  return out;
+}
+
+function drawCandidate(cands) {
+  let r = Math.random();
+  for (const c of cands) {
+    r -= c.p;
+    if (r <= 0) return c.ch;
+  }
+  return cands[cands.length - 1].ch;
+}
+
+/** Settle one position: the real character, its tint, and the landing pulse. */
+function lock(span, text, bits) {
+  span.textContent = text;
+  // Newlines carry no useful tint and a coloured block at the end of a line
+  // reads as a rendering bug rather than as information.
+  if (isSpace(text)) {
+    span.className = "";
+    return;
+  }
+  span.style.background = tint(bits);
+  span.className = "tok-locked";
+}
+
+/**
+ * Resolve every position at once, each in its own time.
+ *
+ * The lock time *is* the surprisal: `bits[i]` mapped through `pace`. Under
+ * `SNAP_BITS` the model was certain and the character never spins, which is
+ * why most of a Shakespeare passage is solid on the first frame and what is
+ * left blinking is precisely the set it was unsure about.
+ */
+function reveal(data, pace = REVEAL) {
+  const { tokens, bits, spans } = data;
+  const t0 = performance.now();
+  const jump = reducedMotion.matches;
+  // Claims the spans. A second reveal over the same data — the reader pressing
+  // the button twice — supersedes this one on its next frame.
+  const token = (data.reveal = {});
+  let live = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    // Position 0 was never predicted — nothing precedes it — so it has no
+    // alternatives to show and no surprisal to spend.
+    const cands = jump || i === 0 || isSpace(tokens[i]) ? [] : candidates(data, i);
+    const f = (bits[i] - SNAP_BITS) / (MAX_BITS - SNAP_BITS);
+    if (cands.length < 2 || f <= 0) {
+      lock(spans[i], tokens[i], bits[i]);
+      continue;
+    }
+    // On a replay this span is still wearing the tint the last reveal left. It
+    // has not been earned again yet.
+    spans[i].style.background = "";
+    spans[i].className = "tok-spin";
+    live.push({
+      i,
+      span: spans[i],
+      cands,
+      lockAt: t0 + pace.min + (pace.max - pace.min) * Math.min(f, 1),
+      nextSwap: t0,
+    });
+  }
+
+  function frame(now) {
+    // Guarded per element, not against state.generation directly: the three
+    // passages are scored one after another and their reveals overlap on
+    // purpose, but a newer result — or a newer replay — for *this* element
+    // must abort the loop running over it rather than fight it for the spans.
+    if (state.scored.get(data.target) !== data || data.reveal !== token) return;
+    live = live.filter((p) => {
+      if (now >= p.lockAt) {
+        lock(p.span, tokens[p.i], bits[p.i]);
+        return false;
+      }
+      if (now >= p.nextSwap) {
+        p.span.textContent = drawCandidate(p.cands);
+        const done = (now - t0) / (p.lockAt - t0);
+        p.nextSwap = now + SWAP.from + (SWAP.to - SWAP.from) * done;
+      }
+      return true;
+    });
+    if (live.length) requestAnimationFrame(frame);
+  }
+  if (live.length) requestAnimationFrame(frame);
+}
+
+/** Replay what is already on the page. No forward pass: the numbers driving
+ *  the second reveal are the numbers that drove the first. */
+function replay() {
+  for (const target of state.targets) {
+    const d = state.scored.get(target);
+    if (d) reveal(d, d.pace);
+  }
+}
+
+/* ── the readout ─────────────────────────────────────────────────────────
+ *
+ * The same top-k the flicker cycles through, as bars. That is the point of
+ * showing them: a reader who watched a character hesitate between `e` and `a`
+ * can hover it and find `e` and `a`, with the weights that decided how often
+ * each appeared.
+ */
+
+const bars = { rows: [], root: null };
+
+function barRow() {
+  const el = document.createElement("div");
+  el.className = "bar-row";
+  const g = document.createElement("span");
+  g.className = "bar-glyph";
+  const track = document.createElement("span");
+  track.className = "bar-track";
+  const fill = document.createElement("span");
+  fill.className = "bar-fill";
+  track.append(fill);
+  const p = document.createElement("span");
+  p.className = "bar-p";
+  const mark = document.createElement("span");
+  mark.className = "bar-mark";
+  el.append(g, track, p, mark);
+  return { el, g, fill, p, mark };
+}
+
+function ensureRows(n) {
+  bars.root ??= $("react-bars");
+  while (bars.rows.length < n) {
+    const r = barRow();
+    bars.rows.push(r);
+    bars.root.append(r.el);
+  }
+  for (let i = 0; i < bars.rows.length; i++) bars.rows[i].el.hidden = i >= n;
+}
+
+const show = (s) => (s === "\n" ? "\\n" : s === " " ? "␣" : s);
 
 function describe(target, i) {
   const d = state.scored.get(target);
   if (!d || i == null || i < 0 || i >= d.bits.length) return;
-  const show = (s) => (s === "\n" ? "\\n" : s === " " ? "␣" : s);
   if (i === 0) {
-    el.readout(`"${show(d.tokens[0])}" — the first character; nothing precedes it.`);
+    el.at(`"${show(d.tokens[0])}" — the first character; nothing precedes it.`);
+    ensureRows(0);
     return;
   }
-  const pct = (d.topP[i] * 100).toFixed(0);
-  el.readout(
-    `"${show(d.tokens[i])}" — ${d.bits[i].toFixed(2)} bits. ` +
-      `The model expected "${show(d.top[i])}" (${pct}% sure).`,
+
+  const k = d.k;
+  // Scaled to the top bar, not to 1: the model is often 90% sure, and against
+  // an absolute axis every alternative it weighed would be an invisible sliver.
+  const peak = d.altP[i * k] || 1;
+  let found = false;
+  ensureRows(k);
+  for (let j = 0; j < k; j++) {
+    const ch = d.alt[i * k + j];
+    const p = d.altP[i * k + j];
+    const r = bars.rows[j];
+    r.g.textContent = show(ch);
+    r.fill.style.width = `${Math.max(1, (p / peak) * 100).toFixed(1)}%`;
+    r.p.textContent = p < 0.005 ? "<1%" : `${(p * 100).toFixed(0)}%`;
+    const actual = ch === d.tokens[i];
+    found ||= actual;
+    r.mark.textContent = actual ? "actual" : "";
+    r.el.classList.toggle("is-chosen", actual);
+  }
+  el.at(
+    `"${show(d.tokens[i])}" — ${d.bits[i].toFixed(2)} bits` +
+      (found ? "" : `, not in its top ${k}`),
   );
 }
 
@@ -296,8 +527,10 @@ async function main() {
     return;
   }
 
-  // Paint every passage once, sequentially — three forward passes, and they
-  // must not race each other for the same generation id.
+  // Score every passage once, sequentially — three forward passes, and they
+  // must not race each other for the same generation id. Their *reveals*
+  // overlap: each starts as its own pass lands, and the loops are guarded per
+  // element rather than by the shared counter.
   for (const p of PASSAGES) {
     await score(p.text, p.el, ++state.generation, {
       onDone: (mean) => {
@@ -305,7 +538,10 @@ async function main() {
       },
     });
   }
-  el.readout("Hover a character to see what the model expected instead.");
+
+  const replayBtn = $("react-replay");
+  replayBtn.disabled = false;
+  replayBtn.addEventListener("click", replay);
 
   // Selecting rescores exactly what was selected — and that is the page's real
   // point, because a selection is a *different question*: the model sees only
@@ -326,6 +562,7 @@ async function main() {
       if (text.trim().length < 2) return;
       request(text, selView, {
         stat: (t) => ($("react-selection-stat").textContent = t),
+        pace: RETRIGGER_REVEAL,
         onDone: (mean) => {
           $("react-selection-card").hidden = false;
           $("react-selection-note").textContent =
@@ -347,8 +584,9 @@ async function main() {
   });
   input.parentElement.parentElement.appendChild(own);
 
-  input.addEventListener("input", () => request(input.value, own, { warns: true }));
-  await score(input.value, own, ++state.generation, { warns: true });
+  const ownOpts = { warns: true, pace: RETRIGGER_REVEAL };
+  input.addEventListener("input", () => request(input.value, own, ownOpts));
+  await score(input.value, own, ++state.generation, ownOpts);
 }
 
 main();

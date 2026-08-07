@@ -8,6 +8,32 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **The Surprise page resolves itself.** Every position gets a resolve time
+  proportional to its own surprisal: characters the model was certain of snap
+  solid on the first frame, and the ones it was torn about keep flickering
+  through its genuine top-8 — sampled in proportion to probability, decelerating
+  from ~50 ms to ~180 ms between swaps — until the last hold-out lands. What
+  settles is the heat map the page always shipped. Nothing staggers left to
+  right: all positions are scored in the same pass, so all of them start
+  together and only certainty separates them. Runs once when the weights land,
+  and again on a **Read it again** button above the fold;
+  `prefers-reduced-motion` jumps to the final frame.
+- **The reveal is a replay, and the page says so.** The scoring pass finishes in
+  ~15 ms before the first frame is drawn. Every number driving the animation is
+  real — a lock time *is* a surprisal value — but no inference happens during
+  the flicker, and the page states that under the text rather than letting a
+  reader infer that each blink cost a forward pass.
+- **A live readout beside the text.** The grey line at the bottom of the page is
+  gone; hovering a character now fills a sticky panel of `.bar-row`s with the
+  candidates the flicker was cycling through, which closes the loop between the
+  animation and the number.
+- **`forge_surprise::Surprisal` returns `k` candidates per position** — `alt_ids`
+  and `alt_p`, flat and descending, `k` wide — via `forge::top_probs`, which
+  partitions rather than sorts a whole vocabulary. Column 0 is the old
+  `top`/`top_p`, read back through `Surprisal::top()` and `top_p()` rather than
+  stored twice. `k` is clamped to `1..=vocab_size`, and `k = 1` reproduces the
+  previous numbers exactly.
+
 - **`.fzm`, a hand-rolled q4 checkpoint format** (`src/serialization/fzm.rs`):
   flat, magic-prefixed, per-group affine 4-bit with `GROUP_SIZE = 64`. No GGUF
   and no candle bindings — the same rule the kernels follow. `save_fzm_q4` /
@@ -43,6 +69,38 @@ All notable changes to this project are recorded here. The format follows
   weights.
 - `forge-top` discovers and runs `.fzm` as well as `.safetensors`, reading only
   the header for the listing.
+- **Surprisal moved out of the runtime into `tools/surprise`.** **Breaking.**
+  `forge::Surprisal` and `Gpt2::surprisal_async` are now
+  `forge_surprise::Surprisal` and `forge_surprise::surprisal(model, ids, k)` — a
+  free function, not an extension trait — and the page loads
+  `forge-surprise/forge_surprise.js` instead of the core bundle. `WasmSurprise`
+  re-exposes only the six methods `react.js` calls, not the whole of `WasmGpt2`.
+  Same shape as `tools/council`: `publish = false`, a path+version dependency on
+  `forge-ml`, its own cdylib. `tests/surprisal.rs` moved with it and passed
+  unchanged, which is what made the lift safe to land on its own.
+
+  **This reverses 0.3.0.** That release recorded, on removing `WasmCouncil` from
+  the runtime's bundle, that *"`WasmGpt2.surprisal` stayed: it is marshalling
+  over `Gpt2::surprisal_async`, a scoring pass in the way `generate` is a
+  decoding one."* That argument is not what changed — scoring **is** a
+  primitive, and `Gpt2::forward` still is one, returning the `[t, vocab]` logits
+  everything above is host arithmetic over. What changed is that the
+  *presentation* of scoring — bits, the expected character, and now a ranked
+  list of alternatives sized for an animation — is a page's vocabulary, not a
+  runtime's. The runtime loses no capability, only an opinion about what a
+  caller wants done with logits.
+
+  The bill: a third copy of the runtime in the composed site (`docs/dist/`
+  gains `forge-surprise/`, ~2.2 MB, though the 6.7 MB checkpoint that dominates
+  the load is still shared between `index.html` and `react.html`), and ~40 lines
+  of duplicated `load_char` marshalling and accessors. Council settled the same
+  bill in 0.3.0.
+
+### Removed
+
+- **`forge::Surprisal`, `Gpt2::surprisal_async` and `WasmGpt2.surprisal`** — see
+  the move above. Dependents scoring text call `forge_surprise::surprisal`, or
+  `Gpt2::forward` plus their own log-sum-exp, which is all this ever was.
 
 ## [0.4.0] — 2026-08-02
 

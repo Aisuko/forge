@@ -105,6 +105,7 @@ check-full: ## Everything in check, plus the release test suite (~1m10s)
 test: ## Run the release test suite only
 	cargo test -p forge-ml --release --locked --features train
 	cargo test -p forge-council --release --locked
+	cargo test -p forge-surprise --release --locked
 
 test-parity: ## The numeric parity suites against the PyTorch goldens
 	cargo test --release --test op_parity
@@ -116,7 +117,7 @@ fmt: ## Format the workspace
 clippy: ## Lint with warnings denied
 	cargo clippy -p forge-ml --all-targets --locked -- -D warnings
 	cargo clippy -p forge-ml --all-targets --locked --features train -- -D warnings
-	cargo clippy -p forge-council -p forge-top --all-targets --locked -- -D warnings
+	cargo clippy -p forge-council -p forge-surprise -p forge-top --all-targets --locked -- -D warnings
 
 # ── setup ────────────────────────────────────────────────────────────────────
 
