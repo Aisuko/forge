@@ -85,6 +85,21 @@
 
       <!-- ── the text ─────────────────────────────────────────────────── -->
       <section id="stage" class="mt-6">
+        <!-- Numbered, because the page is three things and previously looked
+             like one: the passage, a selection scored on its own, and the
+             reader's own text. Nothing announced the second and third, so a
+             reader who never selected or typed never found them. -->
+        <h2 class="flex items-baseline gap-2 text-sm font-semibold">
+          <span
+            class="font-mono text-xs text-forge-600 dark:text-forge-300"
+            aria-hidden="true"
+            >1</span
+          >
+          The passage, as it was read
+        </h2>
+        <p class="mt-1 mb-3 text-xs text-ink-500 dark:text-ink-300">
+          Hover any character to see the alternatives the model weighed there.
+        </p>
         <!-- Two columns from `sm` up. The panel used to be a grey line below
              three cards of prose, which put it off-screen at exactly the moment
              a reader was hovering the text that drives it. -->
@@ -141,9 +156,23 @@
              context before them. Scoring it in place would overwrite the
              passage and hide that; giving it its own panel makes the two
              comparable. -->
-        <div id="react-selection-card" class="card mt-4" hidden>
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 class="panel-h text-sm">Your selection, read on its own</h2>
+        <h2 class="mt-8 flex items-baseline gap-2 text-sm font-semibold">
+          <span
+            class="font-mono text-xs text-forge-600 dark:text-forge-300"
+            aria-hidden="true"
+            >2</span
+          >
+          Your selection, read on its own
+        </h2>
+        <!-- The heading sits outside the card, which stays hidden until there
+             is a selection: otherwise the feature only announces itself to a
+             reader who had already found it. -->
+        <p class="mt-1 text-xs text-ink-500 dark:text-ink-300">
+          Select any stretch of the passage above and it is scored again with
+          nothing before it.
+        </p>
+        <div id="react-selection-card" class="card mt-3" hidden>
+          <div class="flex flex-wrap items-baseline justify-end gap-2">
             <p
               id="react-selection-stat"
               class="font-mono text-[11px] text-forge-600 dark:text-forge-300"
@@ -160,9 +189,19 @@
         </div>
 
         <!-- The reader's own text. Same engine, no special case. -->
-        <div class="card mt-4">
+        <h2 class="mt-8 flex items-baseline gap-2 text-sm font-semibold">
+          <span
+            class="font-mono text-xs text-forge-600 dark:text-forge-300"
+            aria-hidden="true"
+            >3</span
+          >
+          Your own text
+        </h2>
+        <div class="card mt-3">
           <label class="block">
-            <span class="block text-xs text-ink-500 dark:text-ink-300"
+            <!-- In the accent, not grey: it is the one control on the page a
+                 reader has to notice to discover the text is theirs to change. -->
+            <span class="block text-xs text-forge-600 dark:text-forge-300"
               >or type your own — it is scored as you pause</span
             >
             <textarea
