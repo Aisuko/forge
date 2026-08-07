@@ -181,10 +181,21 @@ impl Tape {
     }
 
     pub fn split_heads(&mut self, qkv: &TVar, n_head: usize) -> Result<(TVar, TVar, TVar)> {
-        let (q, k, v) = ops::split_heads(&qkv.t, n_head)?;
+        self.split_heads_batched(qkv, n_head, 1)
+    }
+
+    /// [`Tape::split_heads`] over `batch` stacked sequences — see
+    /// [`ops::split_heads_batched`].
+    pub fn split_heads_batched(
+        &mut self,
+        qkv: &TVar,
+        n_head: usize,
+        batch: usize,
+    ) -> Result<(TVar, TVar, TVar)> {
+        let (q, k, v) = ops::split_heads_batched(&qkv.t, n_head, batch)?;
         let iq = qkv.id;
         let mk = move |which: usize| -> BackwardFn {
-            Box::new(move |dy| Ok(vec![(iq, ops::unsplit_head(dy, which)?)]))
+            Box::new(move |dy| Ok(vec![(iq, ops::unsplit_head_batched(dy, which, batch)?)]))
         };
         Ok((
             self.record(q, mk(0)),
@@ -194,12 +205,17 @@ impl Tape {
     }
 
     pub fn merge_heads(&mut self, x: &TVar) -> Result<TVar> {
-        let h = x.t.shape().dim(0);
-        let out = ops::merge_heads(&x.t)?;
+        self.merge_heads_batched(x, 1)
+    }
+
+    /// [`Tape::merge_heads`] over `batch` stacked sequences.
+    pub fn merge_heads_batched(&mut self, x: &TVar, batch: usize) -> Result<TVar> {
+        let h = x.t.shape().dim(0) / batch;
+        let out = ops::merge_heads_batched(&x.t, batch)?;
         let ix = x.id;
         Ok(self.record(
             out,
-            Box::new(move |dy| Ok(vec![(ix, ops::unmerge_heads(dy, h)?)])),
+            Box::new(move |dy| Ok(vec![(ix, ops::unmerge_heads_batched(dy, h, batch)?)])),
         ))
     }
 
@@ -207,7 +223,33 @@ impl Tape {
     /// dwte comes from scatter-add over the token ids; dwpe is the upstream
     /// gradient placed at rows `pos..pos+t`.
     pub fn embedding(&mut self, ids: &Tensor, wte: &TVar, wpe: &TVar, pos: usize) -> Result<TVar> {
-        let out = ops::embedding(ids, &wte.t, Some(&wpe.t), pos)?;
+        self.embedding_batched(ids, wte, wpe, pos, 1)
+    }
+
+    /// [`Tape::embedding`] over `batch` stacked sequences of equal length,
+    /// each starting again at position `pos`.
+    ///
+    /// The token table's gradient is unchanged — a scatter-add over ids does
+    /// not care how the rows are grouped. The *positional* table's does: with
+    /// one sequence, row p of dwpe is dy's row p; with `batch` of them, every
+    /// sequence contributed to that position, so it is the sum down the batch.
+    pub fn embedding_batched(
+        &mut self,
+        ids: &Tensor,
+        wte: &TVar,
+        wpe: &TVar,
+        pos: usize,
+        batch: usize,
+    ) -> Result<TVar> {
+        let seq = ids.shape().numel() / batch.max(1);
+        let out = ops::embedding_chunked(
+            ids,
+            std::slice::from_ref(&wte.t),
+            wte.t.shape().dim(0),
+            Some(&wpe.t),
+            pos,
+            seq,
+        )?;
         let (iw, ip) = (wte.id, wpe.id);
         let ids = ids.clone();
         let wte_shape = wte.t.shape().clone();
@@ -218,11 +260,24 @@ impl Tape {
                 let device = dy.device();
                 let mut dwte = Tensor::zeros(wte_shape.clone(), &device)?;
                 ops::scatter_add_rows(&mut dwte, &ids, dy)?;
-                // dwpe: place dy rows at pos.. via kv_append on a rank-3
-                // view created *before* the write (CPU copy-on-write).
-                let t = ids.shape().numel();
+                // Sum down the batch: a [1, batch] row of ones against dy seen
+                // as [batch, seq*c]. One matmul rather than a reduction op that
+                // would exist for this alone.
+                let summed = if batch == 1 {
+                    dy.clone()
+                } else {
+                    let ones = Tensor::from_f32(&vec![1.0f32; batch], [1, batch], &device)?;
+                    ops::matmul(
+                        &ones,
+                        &dy.reshape([batch, seq * c])?,
+                        None,
+                        ops::MatmulSpec::default(),
+                    )?
+                };
+                // dwpe: place the summed rows at pos.. via kv_append on a
+                // rank-3 view created *before* the write (CPU copy-on-write).
                 let mut dwpe3 = Tensor::zeros([1, n_ctx, c], &device)?;
-                ops::kv_append(&mut dwpe3, &dy.reshape([1, t, c])?, pos)?;
+                ops::kv_append(&mut dwpe3, &summed.reshape([1, seq, c])?, pos)?;
                 Ok(vec![(iw, dwte), (ip, dwpe3.reshape([n_ctx, c])?)])
             }),
         ))

@@ -224,36 +224,67 @@ pub fn dropout(x: &Tensor, p: f32, seed: u32) -> Result<Tensor> {
 /// split_heads backward for one of q/k/v (`which` in 0..3):
 /// d [h, t, hd] -> [t, 3c] with the other thirds zero.
 pub fn unsplit_head(d: &Tensor, which: usize) -> Result<Tensor> {
-    let (h, t, hd) = match d.shape().dims() {
-        [h, t, hd] => (*h, *t, *hd),
-        _ => return Err(ForgeError::Shape("unsplit_head needs [h, t, hd]".into())),
+    unsplit_head_batched(d, which, 1)
+}
+
+/// [`unsplit_head`] over a stacked batch: d [b*h, t, hd] -> [b*t, 3c].
+pub fn unsplit_head_batched(d: &Tensor, which: usize, batch: usize) -> Result<Tensor> {
+    let (bh, t, hd) = match d.shape().dims() {
+        [bh, t, hd] => (*bh, *t, *hd),
+        _ => return Err(ForgeError::Shape("unsplit_head needs [b*h, t, hd]".into())),
     };
+    if batch == 0 || bh % batch != 0 {
+        return Err(ForgeError::Shape(format!(
+            "unsplit_head: {bh} planes not divisible into {batch} sequences"
+        )));
+    }
+    let h = bh / batch;
     let c = h * hd;
-    let shape = Shape::new(&[t, 3 * c]);
+    let shape = Shape::new(&[batch * t, 3 * c]);
     let storage = match d.storage() {
         Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::unsplit_head(cpu_f32(d)?, t, c, h, which).into(),
+            cpu::unsplit_head(cpu_f32(d)?, batch, t, c, h, which).into(),
         )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::unsplit_head(gpu_storage(d)?, t, c, h, which)),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::unsplit_head(
+            gpu_storage(d)?,
+            batch,
+            t,
+            c,
+            h,
+            which,
+        )),
     };
     Ok(f32_tensor(storage, shape))
 }
 
 /// merge_heads backward: dy [t, c] -> [h, t, hd].
 pub fn unmerge_heads(dy: &Tensor, h: usize) -> Result<Tensor> {
-    let (t, c) = match dy.shape().dims() {
-        [t, c] => (*t, *c),
-        _ => return Err(ForgeError::Shape("unmerge_heads needs [t, c]".into())),
+    unmerge_heads_batched(dy, h, 1)
+}
+
+/// [`unmerge_heads`] over a stacked batch: dy [b*t, c] -> [b*h, t, hd].
+pub fn unmerge_heads_batched(dy: &Tensor, h: usize, batch: usize) -> Result<Tensor> {
+    let (bt, c) = match dy.shape().dims() {
+        [bt, c] => (*bt, *c),
+        _ => return Err(ForgeError::Shape("unmerge_heads needs [b*t, c]".into())),
     };
     if c % h != 0 {
         return Err(ForgeError::Shape(format!("unmerge_heads c={c} % h={h}")));
     }
-    let shape = Shape::new(&[h, t, c / h]);
+    if batch == 0 || bt % batch != 0 {
+        return Err(ForgeError::Shape(format!(
+            "unmerge_heads: {bt} rows not divisible into {batch} sequences"
+        )));
+    }
+    let t = bt / batch;
+    let shape = Shape::new(&[batch * h, t, c / h]);
     let storage = match dy.storage() {
         Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::unmerge_heads(cpu_f32(dy)?, t, c, h).into(),
+            cpu::unmerge_heads(cpu_f32(dy)?, batch, t, c, h).into(),
         )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::unmerge_heads(gpu_storage(dy)?, t, c, h)),
+        Storage::Wgpu(_) => {
+            Storage::Wgpu(gpu::ops::unmerge_heads(gpu_storage(dy)?, batch, t, c, h))
+        }
     };
     Ok(f32_tensor(storage, shape))
 }
@@ -262,20 +293,52 @@ pub fn unmerge_heads(dy: &Tensor, h: usize) -> Result<Tensor> {
 /// Training-path op with a sync readback — WebGPU tensors are native-only
 /// here (browser training is out of scope for 1.0).
 pub fn sumsq(x: &Tensor) -> Result<f32> {
-    match x.storage() {
-        Storage::Cpu(_) => Ok(cpu_f32(x)?.iter().map(|&v| v * v).sum()),
-        #[cfg(not(target_arch = "wasm32"))]
-        Storage::Wgpu(s) => {
-            let (partials, groups) = gpu::ops::sumsq_partials(s, x.shape().numel());
-            let bytes = partials.ctx.readback(&partials.buf, 0, groups * 4)?;
-            let vals: Vec<f32> = bytemuck::pod_collect_to_vec(&bytes);
-            Ok(vals.iter().sum())
+    Ok(sumsq_all(std::slice::from_ref(x))?[0])
+}
+
+/// [`sumsq`] over many tensors, in **one** GPU round trip.
+///
+/// The global gradient norm needs this for every parameter at once, and a
+/// round trip is ~90 µs against a reduction that takes single-digit µs — so
+/// per-tensor, GPT-2's 148 parameters cost more in fence waits than the whole
+/// optimizer step does in arithmetic. Every reduction is recorded first, then
+/// all the partials come back together.
+pub fn sumsq_all(xs: &[Tensor]) -> Result<Vec<f32>> {
+    let mut out = vec![0.0f32; xs.len()];
+    // Reductions for the GPU tensors, recorded now and read once below.
+    let mut pending: Vec<(usize, Tensor)> = Vec::new();
+    for (i, x) in xs.iter().enumerate() {
+        match x.storage() {
+            Storage::Cpu(_) => out[i] = cpu_f32(x)?.iter().map(|&v| v * v).sum(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Storage::Wgpu(s) => {
+                let (partials, groups) = gpu::ops::sumsq_partials(s, x.shape().numel());
+                pending.push((
+                    i,
+                    crate::ops::f32_tensor(
+                        Storage::Wgpu(partials),
+                        crate::shape::Shape::new(&[groups]),
+                    ),
+                ));
+            }
+            #[cfg(target_arch = "wasm32")]
+            Storage::Wgpu(_) => {
+                return Err(crate::error::ForgeError::Wgpu(
+                    "sumsq readback unavailable on wasm32 (training is native-only)".into(),
+                ));
+            }
         }
-        #[cfg(target_arch = "wasm32")]
-        Storage::Wgpu(_) => Err(crate::error::ForgeError::Wgpu(
-            "sumsq readback unavailable on wasm32 (training is native-only)".into(),
-        )),
     }
+    if pending.is_empty() {
+        return Ok(out);
+    }
+    let tensors: Vec<Tensor> = pending.iter().map(|(_, t)| t.clone()).collect();
+    // Sync facade over the batched async read; native-only, as above.
+    let all = pollster::block_on(Tensor::to_vec_f32_batch(&tensors))?;
+    for ((i, _), vals) in pending.iter().zip(all) {
+        out[*i] = vals.iter().sum();
+    }
+    Ok(out)
 }
 
 /// y = x * alpha.

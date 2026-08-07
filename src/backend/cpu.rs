@@ -181,20 +181,29 @@ pub fn embedding(ids: &[u32], wte: &[f32], wpe: Option<&[f32]>, c: usize, pos: u
 }
 
 /// qkv: [t, 3c] -> (q, k, v) each [h, t, hd], hd = c / h.
-pub fn split_heads(qkv: &[f32], t: usize, c: usize, h: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+pub fn split_heads(
+    qkv: &[f32],
+    b: usize,
+    t: usize,
+    c: usize,
+    h: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let hd = c / h;
-    let mut q = vec![0.0f32; t * c];
-    let mut k = vec![0.0f32; t * c];
-    let mut v = vec![0.0f32; t * c];
-    for hh in 0..h {
-        for tt in 0..t {
-            for d in 0..hd {
-                let dst = hh * t * hd + tt * hd + d;
-                let src_row = tt * 3 * c;
-                let col = hh * hd + d;
-                q[dst] = qkv[src_row + col];
-                k[dst] = qkv[src_row + c + col];
-                v[dst] = qkv[src_row + 2 * c + col];
+    let n = b * t * c;
+    let mut q = vec![0.0f32; n];
+    let mut k = vec![0.0f32; n];
+    let mut v = vec![0.0f32; n];
+    for bb in 0..b {
+        for hh in 0..h {
+            for tt in 0..t {
+                for d in 0..hd {
+                    let dst = ((bb * h + hh) * t + tt) * hd + d;
+                    let src_row = (bb * t + tt) * 3 * c;
+                    let col = hh * hd + d;
+                    q[dst] = qkv[src_row + col];
+                    k[dst] = qkv[src_row + c + col];
+                    v[dst] = qkv[src_row + 2 * c + col];
+                }
             }
         }
     }
@@ -202,13 +211,15 @@ pub fn split_heads(qkv: &[f32], t: usize, c: usize, h: usize) -> (Vec<f32>, Vec<
 }
 
 /// x: [h, t, hd] -> [t, c], c = h * hd.
-pub fn merge_heads(x: &[f32], t: usize, c: usize, h: usize) -> Vec<f32> {
+pub fn merge_heads(x: &[f32], b: usize, t: usize, c: usize, h: usize) -> Vec<f32> {
     let hd = c / h;
-    let mut out = vec![0.0f32; t * c];
-    for tt in 0..t {
-        for hh in 0..h {
-            for d in 0..hd {
-                out[tt * c + hh * hd + d] = x[hh * t * hd + tt * hd + d];
+    let mut out = vec![0.0f32; b * t * c];
+    for bb in 0..b {
+        for tt in 0..t {
+            for hh in 0..h {
+                for d in 0..hd {
+                    out[(bb * t + tt) * c + hh * hd + d] = x[((bb * h + hh) * t + tt) * hd + d];
+                }
             }
         }
     }
@@ -370,29 +381,34 @@ pub fn dropout(x: &[f32], p: f32, scale: f32, seed: u32) -> Vec<f32> {
         .collect()
 }
 
-/// split_heads backward for one of q/k/v: place d [h, t, hd] into the
-/// `which` third of a zeroed [t, 3c] buffer.
-pub fn unsplit_head(d: &[f32], t: usize, c: usize, h: usize, which: usize) -> Vec<f32> {
+/// split_heads backward for one of q/k/v: place d [b*h, t, hd] into the
+/// `which` third of a zeroed [b*t, 3c] buffer.
+pub fn unsplit_head(d: &[f32], b: usize, t: usize, c: usize, h: usize, which: usize) -> Vec<f32> {
     let hd = c / h;
-    let mut out = vec![0.0f32; t * 3 * c];
-    for hh in 0..h {
-        for tt in 0..t {
-            for dd in 0..hd {
-                out[tt * 3 * c + which * c + hh * hd + dd] = d[hh * t * hd + tt * hd + dd];
+    let mut out = vec![0.0f32; b * t * 3 * c];
+    for bb in 0..b {
+        for hh in 0..h {
+            for tt in 0..t {
+                for dd in 0..hd {
+                    out[(bb * t + tt) * 3 * c + which * c + hh * hd + dd] =
+                        d[((bb * h + hh) * t + tt) * hd + dd];
+                }
             }
         }
     }
     out
 }
 
-/// merge_heads backward: dy [t, c] -> [h, t, hd].
-pub fn unmerge_heads(dy: &[f32], t: usize, c: usize, h: usize) -> Vec<f32> {
+/// merge_heads backward: dy [b*t, c] -> [b*h, t, hd].
+pub fn unmerge_heads(dy: &[f32], b: usize, t: usize, c: usize, h: usize) -> Vec<f32> {
     let hd = c / h;
-    let mut out = vec![0.0f32; t * c];
-    for hh in 0..h {
-        for tt in 0..t {
-            for dd in 0..hd {
-                out[hh * t * hd + tt * hd + dd] = dy[tt * c + hh * hd + dd];
+    let mut out = vec![0.0f32; b * t * c];
+    for bb in 0..b {
+        for hh in 0..h {
+            for tt in 0..t {
+                for dd in 0..hd {
+                    out[((bb * h + hh) * t + tt) * hd + dd] = dy[(bb * t + tt) * c + hh * hd + dd];
+                }
             }
         }
     }

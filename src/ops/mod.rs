@@ -287,19 +287,24 @@ pub fn embedding(ids: &Tensor, wte: &Tensor, wpe: Option<&Tensor>, pos: usize) -
         .first()
         .copied()
         .ok_or_else(|| ForgeError::Shape("wte must be rank 2".into()))?;
-    embedding_chunked(ids, std::slice::from_ref(wte), chunk_rows, wpe, pos)
+    embedding_chunked(ids, std::slice::from_ref(wte), chunk_rows, wpe, pos, 0)
 }
 
 /// Embedding gather from a row-chunked table. `chunks[i]` holds rows
 /// [i * chunk_rows, ...) of the full [vocab, c] table — chunking keeps every
 /// GPU binding under max_storage_buffer_binding_size (GPT-2's wte alone is
 /// ~147 MiB, above the WebGPU default and llvmpipe's hard 128 MiB limit).
+/// `seq` is the length of one sequence when `ids` holds a stacked training
+/// batch, so each sequence's positions restart; 0 means "one sequence", the
+/// inference case.
+#[allow(clippy::too_many_arguments)]
 pub fn embedding_chunked(
     ids: &Tensor,
     chunks: &[Tensor],
     chunk_rows: usize,
     wpe: Option<&Tensor>,
     pos: usize,
+    seq: usize,
 ) -> Result<Tensor> {
     if chunks.is_empty() {
         return Err(ForgeError::Shape(
@@ -318,6 +323,12 @@ pub fn embedding_chunked(
             _ => return Err(ForgeError::Shape("inconsistent wte chunk shapes".into())),
         }
     }
+    let seq = if seq == 0 { t } else { seq };
+    if !t.is_multiple_of(seq) {
+        return Err(ForgeError::Shape(format!(
+            "embedding: {t} rows not a whole number of {seq}-token sequences"
+        )));
+    }
     let n_ctx = match wpe {
         Some(wpe) => match wpe.shape().dims() {
             [n, wc] if *wc == c => *n,
@@ -327,9 +338,9 @@ pub fn embedding_chunked(
     };
     if let Some(wpe) = wpe {
         same_device(&[&chunks[0], wpe])?;
-        if t + pos > n_ctx {
+        if seq + pos > n_ctx {
             return Err(ForgeError::Shape(format!(
-                "sequence {t}+{pos} exceeds context length {n_ctx}"
+                "sequence {seq}+{pos} exceeds context length {n_ctx}"
             )));
         }
     }
@@ -344,7 +355,8 @@ pub fn embedding_chunked(
                 let dst = &mut out[tt * c..(tt + 1) * c];
                 dst.copy_from_slice(&table[row * c..(row + 1) * c]);
                 if let Some(wpe) = wpe {
-                    for (d, &pv) in dst.iter_mut().zip(&wpe[(tt + pos) * c..(tt + pos + 1) * c]) {
+                    let p = tt % seq + pos;
+                    for (d, &pv) in dst.iter_mut().zip(&wpe[p * c..(p + 1) * c]) {
                         *d += pv;
                     }
                 }
@@ -366,6 +378,7 @@ pub fn embedding_chunked(
                 c,
                 n_ctx,
                 pos,
+                seq,
             ))
         }
     };
@@ -499,20 +512,41 @@ pub fn kv_append(cache: &mut Tensor, src: &Tensor, len: usize) -> Result<()> {
 
 /// qkv [t, 3c] -> (q, k, v) each [h, t, c/h].
 pub fn split_heads(qkv: &Tensor, n_head: usize) -> Result<(Tensor, Tensor, Tensor)> {
-    let (t, c3) = match qkv.shape().dims() {
-        [t, c3] => (*t, *c3),
-        _ => return Err(ForgeError::Shape("split_heads needs [t, 3c]".into())),
+    split_heads_batched(qkv, n_head, 1)
+}
+
+/// qkv [b*t, 3c] -> (q, k, v) each [b*h, t, c/h].
+///
+/// `batch` is the training-batch axis: `batch` independent sequences of equal
+/// length, stacked as rows. It folds into the *same* leading axis the heads
+/// already occupy, which is the point — every op downstream (the attention
+/// matmuls, the softmax) sees one flat rank-3 batch and needs no rank-4
+/// support. `batch = 1` is exactly [`split_heads`].
+pub fn split_heads_batched(
+    qkv: &Tensor,
+    n_head: usize,
+    batch: usize,
+) -> Result<(Tensor, Tensor, Tensor)> {
+    let (bt, c3) = match qkv.shape().dims() {
+        [bt, c3] => (*bt, *c3),
+        _ => return Err(ForgeError::Shape("split_heads needs [b*t, 3c]".into())),
     };
+    if batch == 0 || bt % batch != 0 {
+        return Err(ForgeError::Shape(format!(
+            "split_heads: {bt} rows not divisible into {batch} sequences"
+        )));
+    }
+    let t = bt / batch;
     let c = c3 / 3;
     if c3 != 3 * c || c % n_head != 0 {
         return Err(ForgeError::Shape(format!(
             "split_heads: dim {c3} not divisible into 3 x {n_head} heads"
         )));
     }
-    let shape = Shape::new(&[n_head, t, c / n_head]);
+    let shape = Shape::new(&[batch * n_head, t, c / n_head]);
     match qkv.storage() {
         Storage::Cpu(_) => {
-            let (q, k, v) = cpu::split_heads(cpu_f32(qkv)?, t, c, n_head);
+            let (q, k, v) = cpu::split_heads(cpu_f32(qkv)?, batch, t, c, n_head);
             Ok((
                 f32_tensor(Storage::Cpu(CpuStorage::F32(q.into())), shape.clone()),
                 f32_tensor(Storage::Cpu(CpuStorage::F32(k.into())), shape.clone()),
@@ -520,7 +554,7 @@ pub fn split_heads(qkv: &Tensor, n_head: usize) -> Result<(Tensor, Tensor, Tenso
             ))
         }
         Storage::Wgpu(_) => {
-            let (q, k, v) = gpu::ops::split_heads(gpu_storage(qkv)?, t, c, n_head);
+            let (q, k, v) = gpu::ops::split_heads(gpu_storage(qkv)?, batch, t, c, n_head);
             Ok((
                 f32_tensor(Storage::Wgpu(q), shape.clone()),
                 f32_tensor(Storage::Wgpu(k), shape.clone()),
@@ -532,17 +566,28 @@ pub fn split_heads(qkv: &Tensor, n_head: usize) -> Result<(Tensor, Tensor, Tenso
 
 /// x [h, t, hd] -> [t, h*hd].
 pub fn merge_heads(x: &Tensor) -> Result<Tensor> {
-    let (h, t, hd) = match x.shape().dims() {
-        [h, t, hd] => (*h, *t, *hd),
-        _ => return Err(ForgeError::Shape("merge_heads needs [h, t, hd]".into())),
+    merge_heads_batched(x, 1)
+}
+
+/// x [b*h, t, hd] -> [b*t, h*hd]. The inverse of [`split_heads_batched`].
+pub fn merge_heads_batched(x: &Tensor, batch: usize) -> Result<Tensor> {
+    let (bh, t, hd) = match x.shape().dims() {
+        [bh, t, hd] => (*bh, *t, *hd),
+        _ => return Err(ForgeError::Shape("merge_heads needs [b*h, t, hd]".into())),
     };
+    if batch == 0 || bh % batch != 0 {
+        return Err(ForgeError::Shape(format!(
+            "merge_heads: {bh} planes not divisible into {batch} sequences"
+        )));
+    }
+    let h = bh / batch;
     let c = h * hd;
-    let shape = Shape::new(&[t, c]);
+    let shape = Shape::new(&[batch * t, c]);
     let storage = match x.storage() {
         Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::merge_heads(cpu_f32(x)?, t, c, h).into(),
+            cpu::merge_heads(cpu_f32(x)?, batch, t, c, h).into(),
         )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::merge_heads(gpu_storage(x)?, t, c, h)),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::merge_heads(gpu_storage(x)?, batch, t, c, h)),
     };
     Ok(f32_tensor(storage, shape))
 }

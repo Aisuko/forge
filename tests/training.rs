@@ -104,3 +104,78 @@ fn checkpoint_roundtrip() {
     assert_eq!(l1, l2, "loss changed after checkpoint round trip");
     std::fs::remove_file(&path).ok();
 }
+
+/// A batched step must equal the gradient accumulation it replaces.
+///
+/// This is the whole contract of `loss_grads_batched`: `batch` sequences in one
+/// pass, against the same `batch` sequences run one at a time and averaged.
+/// Both devices, because the batch axis is threaded through four WGSL kernels
+/// (split/merge heads and their backwards) whose index arithmetic is exactly
+/// what could be wrong.
+fn batched_matches_accumulation(device: &Device) {
+    let model = Gpt2::init_random(tiny_config(), device, 7).unwrap();
+    let (seq_len, batch) = (12usize, 4usize);
+    // Distinct sequences, so a kernel that ignored the batch index — or read
+    // the wrong one — could not accidentally agree.
+    let ids: Vec<u32> = (0..(batch * seq_len + 1))
+        .map(|i| ((i * 7 + i * i) % 61) as u32)
+        .collect();
+    let input = &ids[..batch * seq_len];
+    let targets = &ids[1..batch * seq_len + 1];
+
+    let (loss_b, grads_b) = model
+        .loss_grads_batched(input, targets, seq_len, 0.0, 0)
+        .unwrap();
+
+    let mut loss_sum = 0.0f32;
+    let mut acc: Option<Vec<Vec<f32>>> = None;
+    for b in 0..batch {
+        let (l, g) = model
+            .loss_grads(
+                &input[b * seq_len..(b + 1) * seq_len],
+                &targets[b * seq_len..(b + 1) * seq_len],
+                0.0,
+                0,
+            )
+            .unwrap();
+        loss_sum += l;
+        let g: Vec<Vec<f32>> = g.iter().map(|t| t.to_vec_f32().unwrap()).collect();
+        acc = Some(match acc {
+            None => g,
+            Some(a) => a
+                .iter()
+                .zip(&g)
+                .map(|(x, y)| x.iter().zip(y).map(|(p, q)| p + q).collect())
+                .collect(),
+        });
+    }
+    let loss_ref = loss_sum / batch as f32;
+    assert!(
+        (loss_b - loss_ref).abs() < 1e-4,
+        "batched loss {loss_b} vs accumulated {loss_ref}"
+    );
+
+    for (i, (gb, ga)) in grads_b.iter().zip(acc.unwrap()).enumerate() {
+        let gb = gb.to_vec_f32().unwrap();
+        assert_eq!(gb.len(), ga.len(), "param {i}: length");
+        // Gradients are sums over 12*4 = 48 token positions, so the scale is
+        // small; an absolute tolerance is the honest one here.
+        for (j, (x, y)) in gb.iter().zip(&ga).enumerate() {
+            let want = y / batch as f32;
+            assert!(
+                (x - want).abs() < 2e-5,
+                "param {i} element {j}: batched {x} vs accumulated {want}"
+            );
+        }
+    }
+}
+
+#[test]
+fn batched_matches_accumulation_cpu() {
+    batched_matches_accumulation(&Device::Cpu);
+}
+
+#[test]
+fn batched_matches_accumulation_wgpu() {
+    batched_matches_accumulation(&Device::wgpu().unwrap());
+}

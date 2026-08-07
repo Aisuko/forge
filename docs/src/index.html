@@ -426,24 +426,230 @@
             machine in front of you.
           </p>
 
-          <div class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            <div class="card">
+          <dl class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-6">
+            <div class="card sm:col-span-2 lg:col-span-4">
+              <div class="flex items-baseline justify-between gap-3">
+                <dt class="text-sm text-ink-500 dark:text-ink-300">
+                  Decode speed
+                </dt>
+                <dd class="flex items-baseline gap-2">
+                  <span
+                    id="eff-live"
+                    class="size-2 rounded-full bg-forge-500 motion-safe:animate-pulse"
+                    title="generating"
+                    hidden
+                  ></span>
+                  <span
+                    id="eff-tps"
+                    class="font-mono text-2xl font-semibold tabular-nums"
+                    >—</span
+                  >
+                  <span class="text-sm text-ink-500 dark:text-ink-300"
+                    >tok/s</span
+                  >
+                </dd>
+              </div>
+
+              <div class="relative mt-3">
+                <svg
+                  id="eff-spark"
+                  class="block h-24 w-full text-forge-500"
+                  viewBox="0 0 600 160"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <defs>
+                    <linearGradient id="eff-fade" x1="0" y1="0" x2="0" y2="1">
+                      <stop
+                        offset="0%"
+                        stop-color="currentColor"
+                        stop-opacity=".38"
+                      />
+                      <stop
+                        offset="100%"
+                        stop-color="currentColor"
+                        stop-opacity="0"
+                      />
+                    </linearGradient>
+                  </defs>
+                  <g
+                    class="stroke-ink-100 dark:stroke-ink-800"
+                    stroke-width="1"
+                  >
+                    <line x1="0" y1="40" x2="600" y2="40" vector-effect="non-scaling-stroke" />
+                    <line x1="0" y1="80" x2="600" y2="80" vector-effect="non-scaling-stroke" />
+                    <line x1="0" y1="120" x2="600" y2="120" vector-effect="non-scaling-stroke" />
+                    <line x1="0" y1="159" x2="600" y2="159" vector-effect="non-scaling-stroke" />
+                  </g>
+                  <path id="eff-area" fill="url(#eff-fade)" d="" />
+                  <line
+                    id="eff-mean"
+                    x1="0"
+                    x2="600"
+                    y1="160"
+                    y2="160"
+                    class="stroke-ink-300 dark:stroke-ink-700"
+                    stroke-width="1"
+                    stroke-dasharray="4 5"
+                    vector-effect="non-scaling-stroke"
+                    style="display: none"
+                  />
+                  <path
+                    id="eff-line"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linejoin="round"
+                    stroke-linecap="round"
+                    vector-effect="non-scaling-stroke"
+                    d=""
+                  />
+                </svg>
+                <span
+                  id="eff-ymax"
+                  class="pointer-events-none absolute top-0 left-0 font-mono text-[10px] text-ink-500 dark:text-ink-300"
+                ></span>
+              </div>
+
+              <div
+                class="mt-2 flex flex-wrap justify-between gap-x-4 font-mono text-[11px] text-ink-500 dark:text-ink-300"
+              >
+                <span>one point per token · dashed line, the run's average</span>
+                <span id="eff-tps-stats">—</span>
+              </div>
+            </div>
+
+            <div class="card sm:col-span-2 lg:col-span-2">
               <dt class="text-sm text-ink-500 dark:text-ink-300">Your GPU</dt>
-              <dd id="eff-gpu" class="mt-1 font-mono text-sm">—</dd>
+              <dd id="eff-gpu" class="mt-1 font-mono text-sm break-words">—</dd>
+
+              <div class="mt-4 border-t border-ink-100 pt-4 dark:border-ink-800">
+                <div class="flex items-baseline justify-between gap-3">
+                  <dt class="text-sm text-ink-500 dark:text-ink-300">
+                    Prompt encode
+                  </dt>
+                  <dd class="flex items-baseline gap-2">
+                    <span
+                      id="eff-prefill"
+                      class="font-mono text-2xl font-semibold tabular-nums"
+                      >—</span
+                    >
+                    <span class="text-sm text-ink-500 dark:text-ink-300"
+                      >tok/s</span
+                    >
+                  </dd>
+                </div>
+                <p id="eff-prefill-sub" class="panel-note font-mono">
+                  Timed over the prompt of your next run.
+                </p>
+              </div>
             </div>
-            <div class="card">
-              <dt class="text-sm text-ink-500 dark:text-ink-300">Decode speed</dt>
-              <dd id="eff-tps" class="mt-1 text-2xl font-semibold">—</dd>
+
+            <div class="card sm:col-span-1 lg:col-span-3">
+              <div class="flex items-baseline justify-between gap-3">
+                <dt class="text-sm text-ink-500 dark:text-ink-300">
+                  Weights on disk
+                </dt>
+                <dd class="flex items-baseline gap-2">
+                  <span
+                    id="eff-size"
+                    class="font-mono text-2xl font-semibold tabular-nums"
+                    >—</span
+                  >
+                  <span class="text-sm text-ink-500 dark:text-ink-300">MB</span>
+                </dd>
+              </div>
+
+              <div class="mt-4 space-y-2">
+                <div class="gauge-row">
+                  <span>fp32</span>
+                  <span class="bar-track">
+                    <span
+                      id="eff-size-fp32-bar"
+                      class="bar-fill bg-ink-300 dark:bg-ink-700"
+                      style="width: 0%"
+                    ></span>
+                  </span>
+                  <span id="eff-size-fp32" class="gauge-v">—</span>
+                </div>
+                <div class="gauge-row">
+                  <span id="eff-size-key">on disk</span>
+                  <span class="bar-track">
+                    <span
+                      id="eff-size-bar"
+                      class="bar-fill bg-forge-600"
+                      style="width: 0%"
+                    ></span>
+                  </span>
+                  <span id="eff-size-disk" class="gauge-v">—</span>
+                </div>
+              </div>
+
+              <p id="eff-size-note" class="panel-note">
+                Measured against the same tensors at four bytes each.
+              </p>
             </div>
-            <div class="card">
-              <dt class="text-sm text-ink-500 dark:text-ink-300">Weights on disk</dt>
-              <dd id="eff-size" class="mt-1 text-2xl font-semibold">—</dd>
+
+            <div class="card sm:col-span-1 lg:col-span-3">
+              <div class="flex items-baseline justify-between gap-3">
+                <dt class="text-sm text-ink-500 dark:text-ink-300">
+                  Parameters
+                </dt>
+                <dd class="flex items-baseline gap-2">
+                  <span
+                    id="eff-params"
+                    class="font-mono text-2xl font-semibold tabular-nums"
+                    >—</span
+                  >
+                  <span class="text-sm text-ink-500 dark:text-ink-300">M</span>
+                </dd>
+              </div>
+
+              <span class="bar-track mt-4 flex">
+                <span
+                  id="eff-p-embed"
+                  class="block h-full bg-forge-300"
+                  style="width: 0%"
+                ></span>
+                <span
+                  id="eff-p-attn"
+                  class="block h-full bg-forge-600"
+                  style="width: 0%"
+                ></span>
+                <span
+                  id="eff-p-mlp"
+                  class="block h-full bg-forge-500"
+                  style="width: 0%"
+                ></span>
+              </span>
+
+              <div class="mt-3 space-y-1">
+                <div class="gauge-row">
+                  <span class="flex items-center gap-2"
+                    ><span class="size-2 rounded-xs bg-forge-300"></span
+                    >embeddings</span
+                  >
+                  <span></span>
+                  <span id="eff-p-embed-v" class="gauge-v">—</span>
+                </div>
+                <div class="gauge-row">
+                  <span class="flex items-center gap-2"
+                    ><span class="size-2 rounded-xs bg-forge-600"></span
+                    >attention</span
+                  >
+                  <span></span>
+                  <span id="eff-p-attn-v" class="gauge-v">—</span>
+                </div>
+                <div class="gauge-row">
+                  <span class="flex items-center gap-2"
+                    ><span class="size-2 rounded-xs bg-forge-500"></span>MLP</span
+                  >
+                  <span></span>
+                  <span id="eff-p-mlp-v" class="gauge-v">—</span>
+                </div>
+              </div>
             </div>
-            <div class="card">
-              <dt class="text-sm text-ink-500 dark:text-ink-300">Parameters</dt>
-              <dd id="eff-params" class="mt-1 text-2xl font-semibold">—</dd>
-            </div>
-          </div>
+          </dl>
 
           <p id="eff-note" class="mt-4 text-sm text-ink-500 dark:text-ink-300">
             Nothing here is filled in until you press Run above — every figure

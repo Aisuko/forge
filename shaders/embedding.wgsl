@@ -1,18 +1,23 @@
 // Fused token + positional embedding gather:
-// out[t, c] = wte[ids[t], c] + wpe[t + pos, c]   (wpe skipped if use_wpe == 0)
+// out[i, c] = wte[ids[i], c] + wpe[i % seq + pos, c]  (wpe skipped if use_wpe == 0)
+//
+// `seq` is the length of one sequence. With a training batch the rows are
+// several independent sequences stacked, and each restarts its positions —
+// which is the whole of what the batch axis means to this kernel. Unbatched,
+// seq == t and `i % seq` is `i`.
 
 struct Params {
-    t: u32,        // number of tokens
+    t: u32,        // number of token rows in total
     c: u32,        // embedding dim
-    pos: u32,      // position offset of ids[0]
+    pos: u32,      // position offset of each sequence's first token
     use_wpe: u32,
     // The bound wte buffer holds rows [row_start, row_end) of the full table
     // (row-chunked to respect max_storage_buffer_binding_size). Each token is
     // written by exactly the dispatch whose chunk owns its id.
     row_start: u32,
     row_end: u32,
+    seq: u32,
     _pad0: u32,
-    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -36,7 +41,7 @@ fn main(
     if (id < p.row_start || id >= p.row_end) { return; }
     var v = wte[(id - p.row_start) * p.c + ch];
     if (p.use_wpe == 1u) {
-        v = v + wpe[(t + p.pos) * p.c + ch];
+        v = v + wpe[(t % p.seq + p.pos) * p.c + ch];
     }
     out[i] = v;
 }

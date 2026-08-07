@@ -345,7 +345,7 @@ fn chunked_embedding_and_lm_head_parity() {
         let chunks = make_chunks(dev);
         let wpe_t = Tensor::from_f32(&wpe, [n_ctx, c], dev).unwrap();
         let ids_t = Tensor::from_u32(&ids, [t], dev).unwrap();
-        let emb = ops::embedding_chunked(&ids_t, &chunks, chunk_rows, Some(&wpe_t), 2)
+        let emb = ops::embedding_chunked(&ids_t, &chunks, chunk_rows, Some(&wpe_t), 2, 0)
             .unwrap()
             .to_vec_f32()
             .unwrap();

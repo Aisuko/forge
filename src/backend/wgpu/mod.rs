@@ -21,6 +21,11 @@ const SHADERS_CORE: &[(&str, &str)] = &[
     ("add", include_str!("../../../shaders/add.wgsl")),
     ("gelu", include_str!("../../../shaders/gelu.wgsl")),
     ("matmul", include_str!("../../../shaders/matmul.wgsl")),
+    ("gemv", include_str!("../../../shaders/gemv.wgsl")),
+    (
+        "gemv_reduce",
+        include_str!("../../../shaders/gemv_reduce.wgsl"),
+    ),
     ("softmax", include_str!("../../../shaders/softmax.wgsl")),
     ("layernorm", include_str!("../../../shaders/layernorm.wgsl")),
     ("embedding", include_str!("../../../shaders/embedding.wgsl")),
@@ -138,6 +143,25 @@ struct Pool {
 /// this evicts, which is the right choice — they are never asked for twice.
 const MAX_POOL_BYTES: usize = 512 * 1024 * 1024;
 
+/// How much the staging free list may hold. Small: readback targets are
+/// logits and probe vectors, not weights.
+const MAX_STAGING_BYTES: usize = 64 * 1024 * 1024;
+
+/// How many distinct kernel-parameter sets to keep buffers for before dropping
+/// the lot. At 64 bytes each this is ~0.5 MiB of GPU memory.
+const MAX_UNIFORM_ENTRIES: usize = 8192;
+
+/// Size class for a staging buffer, in bytes: the next power of two, floored
+/// at 256.
+///
+/// Rounded rather than exact, unlike [`Pool`]. Readback sizes are set by
+/// whatever the caller asked for — a 65-float logits row, a 384-float hidden
+/// state, an `n_layer`-long probe — and an exact key would miss on a request
+/// one element wider. The waste is bounded by 2x of something already tiny.
+fn staging_class(size_bytes: usize) -> u64 {
+    size_bytes.max(256).next_power_of_two() as u64
+}
+
 /// A storage buffer that returns to its context's free list when dropped
 /// rather than being destroyed.
 ///
@@ -246,6 +270,17 @@ struct ScopeState {
 /// and `dispatch` would call it ~100 times per decoded token.
 type Kernel = (Arc<wgpu::ComputePipeline>, Arc<wgpu::BindGroupLayout>);
 
+/// One device may be created *or* destroyed at a time, process-wide.
+///
+/// Creation was the half that was understood first (see `new_async`).
+/// Destruction is the other half, and it deadlocks against creation: tearing a
+/// device down takes the Vulkan loader's global mutex and can park inside the
+/// driver while holding it, at which point the thread creating a device blocks
+/// on that same mutex — while holding this gate — and every other creator
+/// queues behind it. Nothing times out, so the symptom is a `cargo test` that
+/// never returns, and a `git push` that hangs on the hook running it.
+static SERIAL: serial::Gate = serial::Gate::new();
+
 /// Owns the wgpu device/queue and a cache of compiled compute pipelines.
 pub struct WgpuContext {
     pub device: wgpu::Device,
@@ -254,12 +289,48 @@ pub struct WgpuContext {
     pipelines: Mutex<HashMap<&'static str, Kernel>>,
     counters: Counters,
     pool: Mutex<Pool>,
+    /// Mappable readback buffers, by [`staging_class`]. Separate from `pool`
+    /// because these carry MAP_READ | COPY_DST rather than STORAGE usage, and
+    /// because creating one is the single most expensive host-side call in the
+    /// runtime — see [`WgpuContext::stage_copy`].
+    staging: Mutex<Pool>,
+    /// Uniform buffers holding kernel parameters, keyed by their contents.
+    /// See [`WgpuContext::params_buffer`].
+    uniforms: Mutex<HashMap<Box<[u32]>, Arc<wgpu::Buffer>>>,
     scope: Mutex<ScopeState>,
+    /// The [`SERIAL`] gate, taken at the top of `Drop` and released only once
+    /// every field above it is gone.
+    ///
+    /// It is a field, and the *last* one, for that reason alone: `Drop::drop`
+    /// runs before any field is dropped, so a guard held in a local there would
+    /// be released before `device` and `queue` ever reach the driver. Fields
+    /// drop in declaration order, so this one goes last — and holding a gate is
+    /// exactly what a `Drop` body cannot otherwise do.
+    #[cfg(not(target_arch = "wasm32"))]
+    _teardown: Option<serial::Guard<'static>>,
 }
 
 impl std::fmt::Debug for WgpuContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "WgpuContext({})", self.adapter_info.name)
+    }
+}
+
+/// Tear the context down one at a time, and never while another thread is
+/// creating one — see [`SERIAL`] for the cycle this closes.
+///
+/// The derived recursive drop this replaces was ungated, which is what let a
+/// thread destroying a device (pipelines, pooled buffers, then `vkDestroyDevice`
+/// itself) sit inside the driver holding a lock that the gate holder needed.
+/// The body only takes the gate: the fields do the work afterwards, and
+/// `_teardown` releases it when they are done.
+///
+/// Not on wasm32: there is one thread, so there is nothing to serialize against,
+/// and blocking it is the one thing that must not happen.
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for WgpuContext {
+    fn drop(&mut self) {
+        self._teardown = Some(SERIAL.lock_blocking());
     }
 }
 
@@ -283,15 +354,25 @@ impl WgpuContext {
     /// across the `.await` below would make this future `!Send` and break
     /// dependents that spawn it.
     pub async fn new_async() -> Result<Arc<Self>> {
-        static CREATE: serial::Gate = serial::Gate::new();
-        let _serial = CREATE.lock().await;
+        let _serial = SERIAL.lock().await;
         Self::create().await
     }
 
     /// Creation itself, without the gate. Every caller comes through
     /// `new_async`, which is where the serialization lives.
     async fn create() -> Result<Arc<Self>> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        // `PRIMARY`, not the default `all()`. The default also builds a GLES
+        // instance on every creation — on Linux that probes EGL and Wayland,
+        // prints `XDG_RUNTIME_DIR is invalid or not set` on a headless box, and
+        // gives every context a second driver stack to tear down, in NVIDIA's
+        // EGL library, where teardown parks. It buys nothing here: PRIMARY is
+        // Vulkan, Metal, DX12 and BROWSER_WEBGPU, so native and wasm both keep
+        // their real backend. The cost is the fallbacks — WebGL2 in a browser
+        // without WebGPU, and GL on an old native driver.
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -317,7 +398,11 @@ impl WgpuContext {
             pipelines: Mutex::new(HashMap::new()),
             counters: Counters::default(),
             pool: Mutex::new(Pool::default()),
+            staging: Mutex::new(Pool::default()),
+            uniforms: Mutex::new(HashMap::new()),
             scope: Mutex::new(ScopeState::default()),
+            #[cfg(not(target_arch = "wasm32"))]
+            _teardown: None,
         }))
     }
 
@@ -513,18 +598,62 @@ impl WgpuContext {
         }
     }
 
+    /// A mappable buffer of at least `size_bytes`, from the staging free list
+    /// when one of its size class is waiting.
+    ///
+    /// **Creating one costs ~1.4 ms on an RTX A5000** — host-visible memory,
+    /// allocated and mapped by the driver — against ~60 µs for the submit and
+    /// fence wait it exists to serve. Every decode step reads its logits back,
+    /// so before this pool the allocation *was* the decode step. Recycling is
+    /// safe for the same reason [`PooledBuffer`] is, minus its caveat: a
+    /// staging buffer is only ever a `copy_buffer_to_buffer` destination, never
+    /// a `write_buffer` one, so nothing can land ahead of recorded commands.
+    fn take_staging(&self, size_bytes: usize) -> wgpu::Buffer {
+        let size = staging_class(size_bytes);
+        let recycled = {
+            let mut pool = self.staging.lock().unwrap();
+            let hit = pool.free.get_mut(&size).and_then(Vec::pop);
+            if hit.is_some() {
+                pool.bytes -= size as usize;
+            }
+            hit
+        };
+        recycled.unwrap_or_else(|| {
+            self.counters
+                .buffers_created
+                .fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .bytes_allocated
+                .fetch_add(size as usize, Ordering::Relaxed);
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })
+    }
+
+    /// Return an **unmapped** staging buffer to the free list. Callers unmap
+    /// first; a buffer that is never returned is simply destroyed, so the error
+    /// paths that skip this leak nothing but the pool hit.
+    fn give_staging(&self, buf: wgpu::Buffer) {
+        let size = buf.size();
+        let mut pool = self.staging.lock().unwrap();
+        if pool.bytes + size as usize > MAX_STAGING_BYTES {
+            return;
+        }
+        pool.bytes += size as usize;
+        pool.free.entry(size).or_default().push(buf);
+    }
+
     fn stage_copy(
         &self,
         buf: &wgpu::Buffer,
         offset_bytes: usize,
         size_bytes: usize,
     ) -> wgpu::Buffer {
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size_bytes as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let staging = self.take_staging(size_bytes);
         // Whatever a scope has recorded must reach the GPU ahead of this copy,
         // or the read returns stale bytes. Going through `submit_with_copies`
         // rather than `flush` then a second submit keeps a decode step at one
@@ -543,7 +672,9 @@ impl WgpuContext {
         size_bytes: usize,
     ) -> Result<Vec<u8>> {
         let staging = self.stage_copy(buf, offset_bytes, size_bytes);
-        let slice = staging.slice(..);
+        // `..size_bytes`, not `..`: a pooled buffer is its size *class*, which
+        // is up to twice what was asked for.
+        let slice = staging.slice(..size_bytes as u64);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
@@ -556,6 +687,7 @@ impl WgpuContext {
             .map_err(|e| ForgeError::Wgpu(format!("map_async: {e:?}")))?;
         let out = slice.get_mapped_range().to_vec();
         staging.unmap();
+        self.give_staging(staging);
         Ok(out)
     }
 
@@ -568,7 +700,8 @@ impl WgpuContext {
         size_bytes: usize,
     ) -> Result<Vec<u8>> {
         let staging = self.stage_copy(buf, offset_bytes, size_bytes);
-        let slice = staging.slice(..);
+        // See `readback`: the pooled buffer may be wider than the request.
+        let slice = staging.slice(..size_bytes as u64);
         let (tx, rx) = oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r));
         #[cfg(not(target_arch = "wasm32"))]
@@ -581,6 +714,7 @@ impl WgpuContext {
             .map_err(|e| ForgeError::Wgpu(format!("map_async: {e:?}")))?;
         let out = slice.get_mapped_range().to_vec();
         staging.unmap();
+        self.give_staging(staging);
         Ok(out)
     }
 
@@ -602,14 +736,7 @@ impl WgpuContext {
         }
         let staging: Vec<wgpu::Buffer> = regions
             .iter()
-            .map(|(_, _, size_bytes)| {
-                self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: None,
-                    size: *size_bytes as u64,
-                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            })
+            .map(|(_, _, size_bytes)| self.take_staging(*size_bytes))
             .collect();
         // See `stage_copy`: pending scope work and every one of these copies go
         // out in one command buffer, so N regions still cost one round trip.
@@ -624,9 +751,12 @@ impl WgpuContext {
         // services all of them.
         let waits: Vec<_> = staging
             .iter()
-            .map(|s| {
+            .zip(regions)
+            .map(|(s, (_, _, size))| {
                 let (tx, rx) = oneshot::channel();
-                s.slice(..)
+                // See `readback`: a pooled buffer is its size class, not the
+                // requested size, so the range is explicit.
+                s.slice(..*size as u64)
                     .map_async(wgpu::MapMode::Read, move |r| tx.send(r));
                 rx
             })
@@ -639,13 +769,53 @@ impl WgpuContext {
         let _ = self.device.poll(wgpu::PollType::Poll);
 
         let mut out = Vec::with_capacity(regions.len());
-        for (rx, s) in waits.into_iter().zip(&staging) {
+        for ((rx, s), (_, _, size)) in waits.into_iter().zip(&staging).zip(regions) {
             rx.await
                 .map_err(|e| ForgeError::Wgpu(format!("map_async: {e:?}")))?;
-            out.push(s.slice(..).get_mapped_range().to_vec());
+            out.push(s.slice(..*size as u64).get_mapped_range().to_vec());
             s.unmap();
         }
+        for s in staging {
+            self.give_staging(s);
+        }
         Ok(out)
+    }
+
+    /// A uniform buffer holding exactly `params`, created once per distinct
+    /// parameter set.
+    ///
+    /// `create_buffer_init` for the 64 bytes of a kernel's parameters measured
+    /// 15 µs on an RTX A5000 — the largest single item in a dispatch, against
+    /// 0.7 µs to build the bind group around it. And a decode step issues the
+    /// same ~135 parameter sets every token, so nearly all of that was spent
+    /// re-creating buffers byte-identical to ones just thrown away.
+    ///
+    /// Caching them is sound where recycling a *storage* buffer would not be
+    /// (see [`PooledBuffer`]): these are written once at creation and never
+    /// again, so no write can land ahead of a dispatch that reads them.
+    ///
+    /// The cache is dropped whole at [`MAX_UNIFORM_ENTRIES`]. Decode's
+    /// parameters carry the KV length, so a long generation does mint new sets
+    /// forever; an exact-key cache with no bound is a leak, and LRU bookkeeping
+    /// would cost more than the miss it avoids.
+    fn params_buffer(&self, name: &'static str, params: &[u32]) -> Arc<wgpu::Buffer> {
+        let mut cache = self.uniforms.lock().unwrap();
+        if let Some(buf) = cache.get(params) {
+            return buf.clone();
+        }
+        if cache.len() >= MAX_UNIFORM_ENTRIES {
+            cache.clear();
+        }
+        let buf = Arc::new(
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(name),
+                    contents: bytemuck::cast_slice(params),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                }),
+        );
+        cache.insert(params.into(), buf.clone());
+        buf
     }
 
     /// Dispatch `name` with binding 0 = `params` (uniform, raw words) and
@@ -660,13 +830,7 @@ impl WgpuContext {
     ) {
         self.counters.dispatches.fetch_add(1, Ordering::Relaxed);
         let (pipeline, layout) = self.pipeline(name);
-        let params_buf = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(name),
-                contents: bytemuck::cast_slice(params),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        let params_buf = self.params_buffer(name, params);
         let mut entries = vec![wgpu::BindGroupEntry {
             binding: 0,
             resource: params_buf.as_entire_binding(),
