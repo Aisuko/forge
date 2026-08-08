@@ -1,6 +1,5 @@
 # Forge
 
-[![CI](https://github.com/Aisuko/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Aisuko/forge/actions/workflows/ci.yml)
 [![Release](https://github.com/Aisuko/forge/actions/workflows/release.yml/badge.svg)](https://github.com/Aisuko/forge/actions/workflows/release.yml)
 [![Pages](https://github.com/Aisuko/forge/actions/workflows/pages.yml/badge.svg)](https://aisuko.github.io/forge/)
 [![crates.io](https://img.shields.io/crates/v/forge-ml.svg)](https://crates.io/crates/forge-ml)
