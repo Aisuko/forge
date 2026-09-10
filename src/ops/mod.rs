@@ -244,6 +244,99 @@ pub fn softmax(x: &Tensor, causal: bool, off: usize) -> Result<Tensor> {
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
+pub fn softmax_masked(x: &Tensor, key_len: &Tensor, batch: usize) -> Result<Tensor> {
+    same_device(&[x, key_len])?;
+    if key_len.dtype() != crate::dtype::DType::U32 {
+        return Err(ForgeError::Shape(
+            "softmax_masked key_len must be u32".into(),
+        ));
+    }
+    if key_len.shape().numel() != batch {
+        return Err(ForgeError::Shape(format!(
+            "softmax_masked key_len has {} entries, expected batch {batch}",
+            key_len.shape().numel()
+        )));
+    }
+    let dims = x.shape().dims();
+    if dims.is_empty() {
+        return Err(ForgeError::Shape("softmax_masked on scalar".into()));
+    }
+    let cols = dims[dims.len() - 1];
+    let rows = x.shape().numel() / cols;
+    if batch == 0 || !rows.is_multiple_of(batch) {
+        return Err(ForgeError::Shape(format!(
+            "softmax_masked: {rows} rows not divisible into {batch} sequences"
+        )));
+    }
+    let group = rows / batch;
+    let storage = match x.storage() {
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::softmax_masked(cpu_f32(x)?, cpu_u32(key_len)?, rows, cols, group).into(),
+        )),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::softmax_masked(
+            gpu_storage(x)?,
+            gpu_storage(key_len)?,
+            rows,
+            cols,
+            group,
+            batch,
+        )),
+    };
+    Ok(f32_tensor(storage, x.shape().clone()))
+}
+
+pub fn mean_pool(x: &Tensor, key_len: &Tensor, batch: usize) -> Result<Tensor> {
+    same_device(&[x, key_len])?;
+    if key_len.dtype() != crate::dtype::DType::U32 {
+        return Err(ForgeError::Shape("mean_pool key_len must be u32".into()));
+    }
+    if key_len.shape().numel() != batch {
+        return Err(ForgeError::Shape(format!(
+            "mean_pool key_len has {} entries, expected batch {batch}",
+            key_len.shape().numel()
+        )));
+    }
+    let (bt, c) = match x.shape().dims() {
+        [bt, c] => (*bt, *c),
+        _ => return Err(ForgeError::Shape("mean_pool needs [b*t, c]".into())),
+    };
+    if batch == 0 || bt % batch != 0 {
+        return Err(ForgeError::Shape(format!(
+            "mean_pool: {bt} rows not divisible into {batch} sequences"
+        )));
+    }
+    let seq = bt / batch;
+    let storage = match x.storage() {
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::mean_pool(cpu_f32(x)?, cpu_u32(key_len)?, batch, seq, c).into(),
+        )),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::mean_pool(
+            gpu_storage(x)?,
+            gpu_storage(key_len)?,
+            batch,
+            seq,
+            c,
+        )),
+    };
+    Ok(f32_tensor(storage, Shape::new(&[batch, c])))
+}
+
+pub fn l2_norm(x: &Tensor, eps: f32) -> Result<Tensor> {
+    let dims = x.shape().dims();
+    if dims.is_empty() {
+        return Err(ForgeError::Shape("l2_norm on scalar".into()));
+    }
+    let cols = dims[dims.len() - 1];
+    let rows = x.shape().numel() / cols;
+    let storage = match x.storage() {
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::l2_norm(cpu_f32(x)?, rows, cols, eps).into(),
+        )),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::l2_norm(gpu_storage(x)?, rows, cols, eps)),
+    };
+    Ok(f32_tensor(storage, x.shape().clone()))
+}
+
 /// LayerNorm over the last dim.
 pub fn layernorm(x: &Tensor, gamma: &Tensor, beta: &Tensor, eps: f32) -> Result<Tensor> {
     same_device(&[x, gamma, beta])?;

@@ -46,6 +46,7 @@ pub mod wasm;
 pub use device::Device;
 pub use dtype::DType;
 pub use error::{ForgeError, Result};
+pub use models::encoder::{Encoder, EncoderConfig};
 pub use models::gpt2::{
     AttnStep, Gpt2, Gpt2Config, KvCache, LayerDetail, Sampler, Sampling, StepTrace, top_probs,
 };

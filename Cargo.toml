@@ -61,6 +61,14 @@ required-features = ["train"]
 name = "train_ops"
 required-features = ["train"]
 
+[[test]]
+name = "encoder_ops"
+required-features = ["train"]
+
+[[test]]
+name = "encoder_model"
+required-features = ["train"]
+
 [[example]]
 name = "train_shakespeare"
 required-features = ["train"]

@@ -106,6 +106,57 @@ pub fn layernorm_bwd(
     }
 }
 
+pub fn mean_pool_bwd(dy: &Tensor, key_len: &Tensor, batch: usize, seq: usize) -> Result<Tensor> {
+    same_device(&[dy, key_len])?;
+    if key_len.dtype() != crate::dtype::DType::U32 || key_len.shape().numel() != batch {
+        return Err(ForgeError::Shape(
+            "mean_pool_bwd key_len must be a u32 tensor of `batch` entries".into(),
+        ));
+    }
+    let c = match dy.shape().dims() {
+        [b, c] if *b == batch => *c,
+        _ => {
+            return Err(ForgeError::Shape(
+                "mean_pool_bwd needs dy [batch, c]".into(),
+            ));
+        }
+    };
+    let storage = match dy.storage() {
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::mean_pool_bwd(cpu_f32(dy)?, cpu_u32(key_len)?, batch, seq, c).into(),
+        )),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::mean_pool_bwd(
+            gpu_storage(dy)?,
+            gpu_storage(key_len)?,
+            batch,
+            seq,
+            c,
+        )),
+    };
+    Ok(f32_tensor(storage, Shape::new(&[batch * seq, c])))
+}
+
+pub fn l2_norm_bwd(x: &Tensor, dy: &Tensor, eps: f32) -> Result<Tensor> {
+    same_device(&[x, dy])?;
+    if x.shape() != dy.shape() {
+        return Err(ForgeError::Shape("l2_norm_bwd shape mismatch".into()));
+    }
+    let (rows, cols) = last_dim_rows(x)?;
+    let storage = match x.storage() {
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::l2_norm_bwd(cpu_f32(x)?, cpu_f32(dy)?, rows, cols, eps).into(),
+        )),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::l2_norm_bwd(
+            gpu_storage(x)?,
+            gpu_storage(dy)?,
+            rows,
+            cols,
+            eps,
+        )),
+    };
+    Ok(f32_tensor(storage, x.shape().clone()))
+}
+
 /// Column sums over all leading dims: `[.., cols]` -> `[cols]`. Bias gradients.
 pub fn sum_rows(x: &Tensor) -> Result<Tensor> {
     let (rows, cols) = last_dim_rows(x)?;

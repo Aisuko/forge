@@ -180,6 +180,37 @@ impl Tape {
         ))
     }
 
+    pub fn softmax_masked(&mut self, x: &TVar, key_len: &Tensor, batch: usize) -> Result<TVar> {
+        let out = ops::softmax_masked(&x.t, key_len, batch)?;
+        let ix = x.id;
+        let yt = out.clone();
+        Ok(self.record(
+            out,
+            Box::new(move |dy| Ok(vec![(ix, ops::softmax_bwd(&yt, dy)?)])),
+        ))
+    }
+
+    pub fn mean_pool(&mut self, x: &TVar, key_len: &Tensor, batch: usize) -> Result<TVar> {
+        let seq = x.t.shape().dim(0) / batch;
+        let out = ops::mean_pool(&x.t, key_len, batch)?;
+        let ix = x.id;
+        let key_len = key_len.clone();
+        Ok(self.record(
+            out,
+            Box::new(move |dy| Ok(vec![(ix, ops::mean_pool_bwd(dy, &key_len, batch, seq)?)])),
+        ))
+    }
+
+    pub fn l2_norm(&mut self, x: &TVar, eps: f32) -> Result<TVar> {
+        let out = ops::l2_norm(&x.t, eps)?;
+        let ix = x.id;
+        let xt = x.t.clone();
+        Ok(self.record(
+            out,
+            Box::new(move |dy| Ok(vec![(ix, ops::l2_norm_bwd(&xt, dy, eps)?)])),
+        ))
+    }
+
     pub fn split_heads(&mut self, qkv: &TVar, n_head: usize) -> Result<(TVar, TVar, TVar)> {
         self.split_heads_batched(qkv, n_head, 1)
     }
@@ -283,6 +314,22 @@ impl Tape {
         ))
     }
 
+    pub fn embedding_tokens(&mut self, ids: &Tensor, wte: &TVar) -> Result<TVar> {
+        let out = ops::embedding(ids, &wte.t, None, 0)?;
+        let iw = wte.id;
+        let ids = ids.clone();
+        let wte_shape = wte.t.shape().clone();
+        Ok(self.record(
+            out,
+            Box::new(move |dy| {
+                let device = dy.device();
+                let mut dwte = Tensor::zeros(wte_shape.clone(), &device)?;
+                ops::scatter_add_rows(&mut dwte, &ids, dy)?;
+                Ok(vec![(iw, dwte)])
+            }),
+        ))
+    }
+
     /// Inverted dropout; the deterministic counter RNG regenerates the same
     /// mask in backward, so nothing is saved.
     pub fn dropout(&mut self, x: &TVar, p: f32, seed: u32) -> Result<TVar> {
@@ -301,9 +348,20 @@ impl Tape {
     /// Returns per-node gradients; leaves keep theirs, interior gradients
     /// are freed as soon as they have been consumed.
     pub fn backward(&mut self, root: &TVar, seed_grad: Tensor) -> Result<Vec<Option<Tensor>>> {
+        self.backward_roots(&[(root, seed_grad)])
+    }
+
+    pub fn backward_roots(&mut self, roots: &[(&TVar, Tensor)]) -> Result<Vec<Option<Tensor>>> {
         let mut grads: Vec<Option<Tensor>> = (0..self.nodes.len()).map(|_| None).collect();
-        grads[root.id] = Some(seed_grad);
-        for id in (0..=root.id).rev() {
+        let mut top = 0usize;
+        for (root, seed) in roots {
+            top = top.max(root.id);
+            grads[root.id] = Some(match grads[root.id].take() {
+                Some(acc) => ops::add(&acc, seed)?,
+                None => seed.clone(),
+            });
+        }
+        for id in (0..=top).rev() {
             if grads[id].is_none() {
                 continue;
             }

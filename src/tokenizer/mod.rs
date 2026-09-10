@@ -30,6 +30,30 @@ pub trait Tokenizer {
     /// emits only the valid-UTF-8 prefix of the accumulated bytes.
     fn decode_bytes(&self, ids: &[u32]) -> Vec<u8>;
     fn vocab_size(&self) -> usize;
+
+    fn encode_padded(&self, text: &str, max_len: usize, pad_id: u32) -> Result<(Vec<u32>, u32)> {
+        let mut ids = self.encode(text)?;
+        ids.truncate(max_len);
+        let len = ids.len() as u32;
+        ids.resize(max_len, pad_id);
+        Ok((ids, len))
+    }
+
+    fn encode_batch_padded(
+        &self,
+        texts: &[&str],
+        max_len: usize,
+        pad_id: u32,
+    ) -> Result<(Vec<u32>, Vec<u32>)> {
+        let mut ids = Vec::with_capacity(texts.len() * max_len);
+        let mut key_len = Vec::with_capacity(texts.len());
+        for text in texts {
+            let (row, len) = self.encode_padded(text, max_len, pad_id)?;
+            ids.extend_from_slice(&row);
+            key_len.push(len);
+        }
+        Ok((ids, key_len))
+    }
 }
 
 pub struct Gpt2Tokenizer {

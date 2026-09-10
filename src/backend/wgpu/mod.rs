@@ -27,7 +27,13 @@ const SHADERS_CORE: &[(&str, &str)] = &[
         include_str!("../../../shaders/gemv_reduce.wgsl"),
     ),
     ("softmax", include_str!("../../../shaders/softmax.wgsl")),
+    (
+        "softmax_masked",
+        include_str!("../../../shaders/softmax_masked.wgsl"),
+    ),
     ("layernorm", include_str!("../../../shaders/layernorm.wgsl")),
+    ("mean_pool", include_str!("../../../shaders/mean_pool.wgsl")),
+    ("l2_norm", include_str!("../../../shaders/l2_norm.wgsl")),
     ("embedding", include_str!("../../../shaders/embedding.wgsl")),
     (
         "split_heads",
@@ -79,6 +85,14 @@ const SHADERS_TRAIN: &[(&str, &str)] = &[
     (
         "unmerge_heads",
         include_str!("../../../shaders/unmerge_heads.wgsl"),
+    ),
+    (
+        "mean_pool_bwd",
+        include_str!("../../../shaders/mean_pool_bwd.wgsl"),
+    ),
+    (
+        "l2_norm_bwd",
+        include_str!("../../../shaders/l2_norm_bwd.wgsl"),
     ),
     ("sumsq", include_str!("../../../shaders/sumsq.wgsl")),
     ("scale", include_str!("../../../shaders/scale.wgsl")),
