@@ -142,6 +142,66 @@ pub fn softmax(
     out
 }
 
+pub fn softmax_masked(
+    x: &[f32],
+    key_len: &[u32],
+    rows: usize,
+    cols: usize,
+    group: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        let base = r * cols;
+        let klen = key_len[r / group] as usize;
+        let mut max = f32::NEG_INFINITY;
+        for j in 0..klen.min(cols) {
+            max = max.max(x[base + j]);
+        }
+        let mut sum = 0.0f32;
+        for j in 0..klen.min(cols) {
+            sum += (x[base + j] - max).exp();
+        }
+        if sum > 0.0 {
+            for j in 0..klen.min(cols) {
+                out[base + j] = (x[base + j] - max).exp() / sum;
+            }
+        }
+    }
+    out
+}
+
+pub fn mean_pool(x: &[f32], key_len: &[u32], batch: usize, seq: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * cols];
+    for b in 0..batch {
+        let n = (key_len[b] as usize).min(seq);
+        if n == 0 {
+            continue;
+        }
+        for t in 0..n {
+            let row = &x[(b * seq + t) * cols..(b * seq + t + 1) * cols];
+            for (o, &v) in out[b * cols..(b + 1) * cols].iter_mut().zip(row) {
+                *o += v;
+            }
+        }
+        for o in out[b * cols..(b + 1) * cols].iter_mut() {
+            *o /= n as f32;
+        }
+    }
+    out
+}
+
+pub fn l2_norm(x: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        let row = &x[r * cols..(r + 1) * cols];
+        let inv = 1.0 / (row.iter().map(|&v| v * v).sum::<f32>() + eps).sqrt();
+        for (o, &v) in out[r * cols..(r + 1) * cols].iter_mut().zip(row) {
+            *o = v * inv;
+        }
+    }
+    out
+}
+
 /// LayerNorm over the last dim (biased variance, like PyTorch).
 pub fn layernorm(
     x: &[f32],
@@ -314,6 +374,45 @@ pub fn layernorm_bwd_dparams(
         }
     }
     (dgamma, dbeta)
+}
+
+pub fn mean_pool_bwd(
+    dy: &[f32],
+    key_len: &[u32],
+    batch: usize,
+    seq: usize,
+    cols: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * seq * cols];
+    for b in 0..batch {
+        let n = (key_len[b] as usize).min(seq);
+        if n == 0 {
+            continue;
+        }
+        let inv = 1.0 / n as f32;
+        for t in 0..n {
+            let dst = &mut out[(b * seq + t) * cols..(b * seq + t + 1) * cols];
+            for (o, &g) in dst.iter_mut().zip(&dy[b * cols..(b + 1) * cols]) {
+                *o = g * inv;
+            }
+        }
+    }
+    out
+}
+
+pub fn l2_norm_bwd(x: &[f32], dy: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        let row = &x[r * cols..(r + 1) * cols];
+        let g = &dy[r * cols..(r + 1) * cols];
+        let inv2 = 1.0 / (row.iter().map(|&v| v * v).sum::<f32>() + eps);
+        let inv = inv2.sqrt();
+        let scaled = row.iter().zip(g).map(|(&a, &b)| a * b).sum::<f32>() * inv2;
+        for (j, o) in out[r * cols..(r + 1) * cols].iter_mut().enumerate() {
+            *o = inv * (g[j] - row[j] * scaled);
+        }
+    }
+    out
 }
 
 /// Column sums: `[rows, cols]` -> `[cols]`. Bias gradients.

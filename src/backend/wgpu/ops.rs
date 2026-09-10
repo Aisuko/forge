@@ -343,6 +343,58 @@ pub fn softmax(
     out
 }
 
+pub fn softmax_masked(
+    x: &WgpuStorage,
+    key_len: &WgpuStorage,
+    rows: usize,
+    cols: usize,
+    group: usize,
+    batch: usize,
+) -> WgpuStorage {
+    let n = rows * cols;
+    let out = alloc(&x.ctx, n);
+    x.ctx.dispatch(
+        "softmax_masked",
+        &[rows as u32, cols as u32, group as u32, 0],
+        &[bind(x, n), bind(key_len, batch), bind(&out, n)],
+        row_grid(rows),
+    );
+    out
+}
+
+pub fn mean_pool(
+    x: &WgpuStorage,
+    key_len: &WgpuStorage,
+    batch: usize,
+    seq: usize,
+    cols: usize,
+) -> WgpuStorage {
+    let out = alloc(&x.ctx, batch * cols);
+    x.ctx.dispatch(
+        "mean_pool",
+        &[batch as u32, seq as u32, cols as u32, 0],
+        &[
+            bind(x, batch * seq * cols),
+            bind(key_len, batch),
+            bind(&out, batch * cols),
+        ],
+        linear_grid(batch * cols),
+    );
+    out
+}
+
+pub fn l2_norm(x: &WgpuStorage, rows: usize, cols: usize, eps: f32) -> WgpuStorage {
+    let n = rows * cols;
+    let out = alloc(&x.ctx, n);
+    x.ctx.dispatch(
+        "l2_norm",
+        &[rows as u32, cols as u32, eps.to_bits(), 0],
+        &[bind(x, n), bind(&out, n)],
+        row_grid(rows),
+    );
+    out
+}
+
 pub fn layernorm(
     x: &WgpuStorage,
     gamma: &WgpuStorage,
@@ -540,6 +592,42 @@ pub fn layernorm_bwd(
         linear_grid(cols),
     );
     (dx, dgamma, dbeta)
+}
+
+pub fn mean_pool_bwd(
+    dy: &WgpuStorage,
+    key_len: &WgpuStorage,
+    batch: usize,
+    seq: usize,
+    cols: usize,
+) -> WgpuStorage {
+    let n = batch * seq * cols;
+    let out = alloc(&dy.ctx, n);
+    dy.ctx.dispatch(
+        "mean_pool_bwd",
+        &[batch as u32, seq as u32, cols as u32, 0],
+        &[bind(dy, batch * cols), bind(key_len, batch), bind(&out, n)],
+        linear_grid(n),
+    );
+    out
+}
+
+pub fn l2_norm_bwd(
+    x: &WgpuStorage,
+    dy: &WgpuStorage,
+    rows: usize,
+    cols: usize,
+    eps: f32,
+) -> WgpuStorage {
+    let n = rows * cols;
+    let out = alloc(&x.ctx, n);
+    x.ctx.dispatch(
+        "l2_norm_bwd",
+        &[rows as u32, cols as u32, eps.to_bits(), 0],
+        &[bind(x, n), bind(dy, n), bind(&out, n)],
+        row_grid(rows),
+    );
+    out
 }
 
 pub fn sum_rows(x: &WgpuStorage, rows: usize, cols: usize) -> WgpuStorage {
