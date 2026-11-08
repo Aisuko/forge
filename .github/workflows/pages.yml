@@ -14,10 +14,15 @@ on:
     branches: [main]
     paths:
       - docs/**
-      - tools/**
       - src/**
       - shaders/**
       - assets/**
+      - tools/council/**
+      - tools/surprise/**
+      - tools/shared/**
+      - Cargo.toml
+      - Cargo.lock
+      - tests/data/gate_expected.json
       - scripts/common/build_site.sh
       - scripts/common/build_web.sh
       - scripts/common/gen_kernels.py
