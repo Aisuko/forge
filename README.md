@@ -6,7 +6,7 @@
 [![docs.rs](https://img.shields.io/docsrs/forge-ml)](https://docs.rs/forge-ml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
-A portable neural network runtime: one Rust crate and one set of WGSL kernels that run on any GPU wgpu reaches (Vulkan, Metal, D3D12, WebGPU). No CUDA, no Python.
+Forge is a vendor-independent Rust neural network runtime, with WebGPU in the browser as a first-class target. No CUDA, no Python.
 
 Demo: **[aisuko.github.io/forge](https://aisuko.github.io/forge/)**
 
@@ -75,12 +75,8 @@ The `train` feature adds autograd, AdamW and the backward kernels.
 
 ## Acknowledgement
 
+Supported by the RACE Merit Allocation Scheme (RMAS), RMIT University.
+
 <a href="https://www.rmit.edu.au/about/schools-colleges/stem/research/race">
   <img src="docs/static/PB-RACE-BLUE-SQ-2.svg" alt="Powered by RMIT University RACE" height="90">
 </a>
-
-Supported by the RACE Merit Allocation Scheme (RMAS), RMIT University.
-
-## License
-
-GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
