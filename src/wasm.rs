@@ -8,6 +8,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::Device;
+use crate::models::encoder_decoder::EncoderDecoder;
 use crate::models::gpt2::{AttnStep, Gpt2, Gpt2Config, Sampling, StepTrace};
 use crate::tokenizer::{AnyTokenizer, CharTokenizer, Gpt2Tokenizer, Tokenizer as _};
 
@@ -418,5 +419,36 @@ impl WasmGpt2 {
                 .map_err(js_err)?;
         }
         Ok(ids)
+    }
+}
+
+#[wasm_bindgen]
+pub struct WasmEncoderDecoder {
+    model: EncoderDecoder,
+    device: Device,
+}
+
+#[wasm_bindgen]
+impl WasmEncoderDecoder {
+    pub async fn load(model_bytes: Vec<u8>) -> Result<WasmEncoderDecoder, JsValue> {
+        let device = Device::wgpu_async().await.map_err(js_err)?;
+        let model =
+            EncoderDecoder::from_checkpoint_bytes(&model_bytes, None, &device).map_err(js_err)?;
+        Ok(WasmEncoderDecoder { model, device })
+    }
+
+    pub fn device_info(&self) -> String {
+        self.device.describe()
+    }
+
+    pub async fn generate_greedy(
+        &self,
+        src: Vec<u32>,
+        max_new_tokens: usize,
+    ) -> Result<Vec<u32>, JsValue> {
+        self.model
+            .generate_greedy_async(&src, max_new_tokens)
+            .await
+            .map_err(js_err)
     }
 }

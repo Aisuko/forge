@@ -50,6 +50,10 @@ struct Params {
 @group(0) @binding(3) var<storage, read> bias: array<f32>;
 @group(0) @binding(4) var<storage, read_write> out: array<f32>;
 
+fn bval(i: u32) -> f32 {
+    return b[i];
+}
+
 const COLS: u32 = 64u;  // columns per workgroup = threads per workgroup
 const MROWS: u32 = 16u; // rows one workgroup carries; must equal GEMV_ROWS
 const KT: u32 = 64u;    // k staged per pass
@@ -95,7 +99,7 @@ fn main(
         for (var gk = k0; gk < k1; gk = gk + 1u) {
             var bv = 0.0;
             if (col < p.n) {
-                bv = b[b_base + gk * b_row + col * b_col];
+                bv = bval(b_base + gk * b_row + col * b_col);
             }
             var av = vec4<f32>(aval(a_base, 0u, gk), 0.0, 0.0, 0.0);
             if (p.m > 1u) {
@@ -145,7 +149,7 @@ fn main(
         for (var kk = 0u; kk < kend; kk = kk + 1u) {
             var bv = 0.0;
             if (col < p.n) {
-                bv = b[b_base + (kt + kk) * b_row + col * b_col];
+                bv = bval(b_base + (kt + kk) * b_row + col * b_col);
             }
             let bb = vec4<f32>(bv);
             // Every thread reads the same asub element, so these broadcast

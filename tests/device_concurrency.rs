@@ -152,3 +152,37 @@ fn the_async_creation_future_is_send() {
     fn assert_send<T: Send>(_: &T) {}
     assert_send(&Device::wgpu_async());
 }
+
+#[test]
+fn scoped_and_unscoped_work_on_one_device_do_not_race() {
+    let Some(device) = Device::wgpu().ok() else {
+        return;
+    };
+    let n = 4096;
+    let x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.37).sin()).collect();
+    let run = move |device: &Device, scoped: bool| {
+        let _scope = scoped.then(|| device.dispatch_scope());
+        let a = Tensor::from_f32(&x, [n], device).unwrap();
+        let h = ops::gelu(&a).unwrap();
+        let z = ops::add(&h, &h).unwrap();
+        ops::add(&z, &ops::gelu(&z).unwrap()).unwrap()
+    };
+    let want = run(&device, false).to_vec_f32().unwrap();
+    let (tx, rx) = mpsc::channel();
+    for t in 0..8 {
+        let (device, want, tx) = (device.clone(), want.clone(), tx.clone());
+        let run = run.clone();
+        std::thread::spawn(move || {
+            let bad = (0..600)
+                .filter(|_| run(&device, t % 2 == 0).to_vec_f32().unwrap() != want)
+                .count();
+            tx.send(bad).unwrap();
+        });
+    }
+    drop(tx);
+    let bad: usize = (0..8).map(|_| rx.recv_timeout(PATIENCE).unwrap()).sum();
+    assert_eq!(
+        bad, 0,
+        "{bad} results read another thread's recycled buffer"
+    );
+}

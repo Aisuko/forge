@@ -1,18 +1,3 @@
-//! Model discovery: walk the given roots for `*.safetensors` and `*.fzm` and
-//! read each file's *header only*.
-//!
-//! The whole point is that listing a 548 MB checkpoint must not cost 548 MB of
-//! RSS. `SafeTensors::read_metadata` looks like it accepts just the header but
-//! asserts the buffer runs to the end of the file
-//! (`safetensors-0.5.3/src/tensor.rs:320`), so the file is memory-mapped and
-//! the full mapped slice handed over — the OS pages in only the few KB the
-//! parser actually touches. `SafeTensors::deserialize` is never called here.
-//!
-//! `.fzm` gets the same treatment through `read_fzm_header`, which walks the
-//! per-tensor headers and skips every body. Without it the shipped
-//! `assets/shakespeare_char/` would simply vanish from the list the day it was
-//! quantized.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +5,6 @@ use forge::Gpt2Config;
 
 use crate::Event;
 
-/// Deepest directory level walked below each root.
 const MAX_DEPTH: usize = 4;
 
 #[derive(Clone)]
@@ -30,8 +14,6 @@ pub struct TensorEntry {
     pub dtype: String,
 }
 
-/// Which tokenizer files sit beside a checkpoint, and hence whether it can
-/// actually be run.
 #[derive(Clone, Copy, PartialEq)]
 pub enum TokenizerKind {
     Bpe,
@@ -51,21 +33,16 @@ impl TokenizerKind {
 
 #[derive(Clone)]
 pub struct ModelInfo {
-    /// The `.safetensors` or `.fzm` file itself.
     pub path: PathBuf,
-    /// Display name — the parent directory for `models/gpt2/model.safetensors`,
-    /// otherwise the file stem.
     pub name: String,
     pub file_size: u64,
     pub params: usize,
     pub tensors: Vec<TensorEntry>,
     pub config: Option<Gpt2Config>,
-    /// Path of the config sidecar, when one parsed.
     pub config_path: Option<PathBuf>,
     pub vocab_path: Option<PathBuf>,
     pub merges_path: Option<PathBuf>,
     pub tokenizer: TokenizerKind,
-    /// Why the model cannot be run, if it cannot.
     pub blocked: Option<String>,
 }
 
@@ -104,8 +81,6 @@ pub fn human_params(n: usize) -> String {
     }
 }
 
-/// Walk `roots`, streaming each model to `send` as it is parsed so a slow
-/// mount cannot stall the UI. Runs on its own thread.
 pub fn scan(roots: Vec<PathBuf>, send: std::sync::mpsc::Sender<Event>) {
     let mut files = Vec::new();
     for root in &roots {
@@ -117,7 +92,7 @@ pub fn scan(roots: Vec<PathBuf>, send: std::sync::mpsc::Sender<Event>) {
         match read_model(&f) {
             Ok(info) => {
                 if send.send(Event::ModelFound(Box::new(info))).is_err() {
-                    return; // UI gone
+                    return;
                 }
             }
             Err(e) => {
@@ -139,9 +114,6 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_dir() {
-            // Build output and VCS internals never hold a model the user
-            // meant; `dist/` in particular would list the site's copy of the
-            // demo checkpoint a second time.
             let skip = matches!(
                 path.file_name().and_then(|s| s.to_str()),
                 Some("target" | ".git" | "node_modules" | "dist")
@@ -166,14 +138,14 @@ fn read_model(path: &Path) -> Result<ModelInfo, String> {
     // (reading 548 MB to draw a list) is what this whole module exists to
     // avoid.
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| e.to_string())?;
-    let mut tensors = if mmap.starts_with(b"FZM1") {
+    let mut tensors = if forge::serialization::fzm::is_fzm(&mmap) {
         forge::serialization::fzm::read_fzm_header(&mmap)
             .map_err(|e| format!("header: {e}"))?
             .into_iter()
-            .map(|(name, shape)| TensorEntry {
+            .map(|(name, shape, dtype)| TensorEntry {
                 name,
                 shape,
-                dtype: "Q4".to_string(),
+                dtype: dtype.name().to_uppercase(),
             })
             .collect::<Vec<_>>()
     } else {
@@ -196,10 +168,6 @@ fn read_model(path: &Path) -> Result<ModelInfo, String> {
 
     let dir = path.parent().unwrap_or(Path::new("."));
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
-    // Sidecars are either bare (`config.json`, the layout of models/gpt2 and
-    // the shipped assets/) or stem-prefixed (`<stem>.config.json`, what
-    // train_shakespeare.rs writes beside a checkpoint directory holding
-    // several models).
     let sidecar = |suffix: &str| -> Option<PathBuf> {
         [dir.join(format!("{stem}.{suffix}")), dir.join(suffix)]
             .into_iter()
@@ -217,7 +185,6 @@ fn read_model(path: &Path) -> Result<ModelInfo, String> {
         (Some(_), None) => TokenizerKind::Char,
         _ => TokenizerKind::None,
     };
-    // Report the *first* blocking reason, so the status line can name it.
     let blocked = if config.is_none() {
         Some(match &config_path {
             Some(p) => format!("{} did not parse as a GPT-2 config", p.display()),

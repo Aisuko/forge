@@ -73,6 +73,38 @@ impl Embedding {
         })
     }
 
+    pub fn from_q4_wte(
+        wte: &crate::dtype::Q4,
+        vocab: usize,
+        n_embd: usize,
+        wpe: Tensor,
+        device: &crate::device::Device,
+    ) -> Result<Self> {
+        if matches!(device, crate::device::Device::Cpu) {
+            return Self::from_host_wte(&wte.dequant(), vocab, n_embd, wpe, device);
+        }
+        let group = crate::dtype::Q4_GROUP;
+        let unit = group / gcd(n_embd, group);
+        let fit = device.max_binding_bytes() / crate::dtype::Q4::device_bytes(unit * n_embd);
+        let chunk_rows = (fit.max(1) * unit).min(vocab);
+        let mut chunks = Vec::new();
+        let mut start = 0usize;
+        while start < vocab {
+            let rows = chunk_rows.min(vocab - start);
+            chunks.push(Tensor::from_q4(
+                &wte.slice(start * n_embd, rows * n_embd),
+                [rows, n_embd],
+                device,
+            )?);
+            start += rows;
+        }
+        Ok(Embedding {
+            wte_chunks: chunks,
+            chunk_rows,
+            wpe,
+        })
+    }
+
     /// ids: u32 tensor `[t]`; `pos` is the absolute position of `ids[0]`.
     pub fn forward(&self, ids: &Tensor, pos: usize) -> Result<Tensor> {
         self.forward_batched(ids, pos, 0)
@@ -90,4 +122,8 @@ impl Embedding {
             seq,
         )
     }
+}
+
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd(b, a % b) }
 }

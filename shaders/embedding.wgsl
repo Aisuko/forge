@@ -22,9 +22,13 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read> ids: array<u32>;
-@group(0) @binding(2) var<storage, read> wte: array<f32>;
+@group(0) @binding(2) var<storage, read> b: array<f32>;
 @group(0) @binding(3) var<storage, read> wpe: array<f32>;
 @group(0) @binding(4) var<storage, read_write> out: array<f32>;
+
+fn bval(i: u32) -> f32 {
+    return b[i];
+}
 
 @compute @workgroup_size(256)
 fn main(
@@ -39,7 +43,7 @@ fn main(
     let ch = i % p.c;
     let id = ids[t];
     if (id < p.row_start || id >= p.row_end) { return; }
-    var v = wte[(id - p.row_start) * p.c + ch];
+    var v = bval((id - p.row_start) * p.c + ch);
     if (p.use_wpe == 1u) {
         v = v + wpe[(t % p.seq + p.pos) * p.c + ch];
     }

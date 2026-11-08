@@ -55,41 +55,6 @@ fn softmax_masked_zeroes_padding_and_normalizes() {
 }
 
 #[test]
-fn mean_pool_averages_only_valid_rows() {
-    let (batch, seq, c) = (2usize, 4usize, 3usize);
-    let x: Vec<f32> = (0..batch * seq * c).map(|i| i as f32).collect();
-    let key_len = [2u32, 4];
-    let y = ops::mean_pool(
-        &Tensor::from_f32(&x, [batch * seq, c], &Device::Cpu).unwrap(),
-        &Tensor::from_u32(&key_len, [batch], &Device::Cpu).unwrap(),
-        batch,
-    )
-    .unwrap()
-    .to_vec_f32()
-    .unwrap();
-    assert_eq!(&y[..3], &[1.5, 2.5, 3.5]);
-    assert_eq!(&y[3..], &[16.5, 17.5, 18.5]);
-}
-
-#[test]
-fn l2_norm_produces_unit_rows() {
-    let mut rng = StdRng::seed_from_u64(11);
-    let (rows, c) = (5usize, 17usize);
-    let x = rand_vec(&mut rng, rows * c);
-    let y = ops::l2_norm(
-        &Tensor::from_f32(&x, [rows, c], &Device::Cpu).unwrap(),
-        1e-12,
-    )
-    .unwrap()
-    .to_vec_f32()
-    .unwrap();
-    for r in 0..rows {
-        let n: f32 = y[r * c..(r + 1) * c].iter().map(|v| v * v).sum::<f32>();
-        assert!((n - 1.0).abs() < 1e-5, "row {r} norm {n}");
-    }
-}
-
-#[test]
 fn softmax_masked_parity() {
     let gpu = wgpu_device();
     let mut rng = StdRng::seed_from_u64(21);
@@ -118,89 +83,6 @@ fn softmax_masked_parity() {
     }
 }
 
-#[test]
-fn mean_pool_parity() {
-    let gpu = wgpu_device();
-    let mut rng = StdRng::seed_from_u64(22);
-    for (batch, seq, c) in [(1usize, 1usize, 4usize), (8, 16, 64), (3, 257, 33)] {
-        let x = rand_vec(&mut rng, batch * seq * c);
-        let key_len: Vec<u32> = (0..batch)
-            .map(|_| rng.random_range(1..=seq) as u32)
-            .collect();
-        let fwd = |d: &Device| {
-            ops::mean_pool(
-                &Tensor::from_f32(&x, [batch * seq, c], d).unwrap(),
-                &Tensor::from_u32(&key_len, [batch], d).unwrap(),
-                batch,
-            )
-            .unwrap()
-        };
-        assert_close(
-            &fwd(&Device::Cpu).to_vec_f32().unwrap(),
-            &fwd(&gpu).to_vec_f32().unwrap(),
-            TOL,
-            &format!("mean_pool b={batch} t={seq} c={c}"),
-        );
-
-        let dy = rand_vec(&mut rng, batch * c);
-        let bwd = |d: &Device| {
-            ops::mean_pool_bwd(
-                &Tensor::from_f32(&dy, [batch, c], d).unwrap(),
-                &Tensor::from_u32(&key_len, [batch], d).unwrap(),
-                batch,
-                seq,
-            )
-            .unwrap()
-            .to_vec_f32()
-            .unwrap()
-        };
-        assert_close(
-            &bwd(&Device::Cpu),
-            &bwd(&gpu),
-            TOL,
-            &format!("mean_pool_bwd b={batch} t={seq} c={c}"),
-        );
-    }
-}
-
-#[test]
-fn l2_norm_parity() {
-    let gpu = wgpu_device();
-    let mut rng = StdRng::seed_from_u64(23);
-    for (rows, c) in [(1usize, 3usize), (64, 320), (7, 513)] {
-        let x = rand_vec(&mut rng, rows * c);
-        let dy = rand_vec(&mut rng, rows * c);
-        let fwd = |d: &Device| {
-            ops::l2_norm(&Tensor::from_f32(&x, [rows, c], d).unwrap(), 1e-12)
-                .unwrap()
-                .to_vec_f32()
-                .unwrap()
-        };
-        assert_close(
-            &fwd(&Device::Cpu),
-            &fwd(&gpu),
-            TOL,
-            &format!("l2_norm {rows}x{c}"),
-        );
-        let bwd = |d: &Device| {
-            ops::l2_norm_bwd(
-                &Tensor::from_f32(&x, [rows, c], d).unwrap(),
-                &Tensor::from_f32(&dy, [rows, c], d).unwrap(),
-                1e-12,
-            )
-            .unwrap()
-            .to_vec_f32()
-            .unwrap()
-        };
-        assert_close(
-            &bwd(&Device::Cpu),
-            &bwd(&gpu),
-            TOL,
-            &format!("l2_norm_bwd {rows}x{c}"),
-        );
-    }
-}
-
 fn gradcheck(
     x: &[f32],
     w: &[f32],
@@ -223,72 +105,6 @@ fn gradcheck(
             dx[i]
         );
     }
-}
-
-#[test]
-fn mean_pool_gradcheck() {
-    let (batch, seq, c) = (3usize, 5usize, 4usize);
-    let mut rng = StdRng::seed_from_u64(31);
-    let x = rand_vec(&mut rng, batch * seq * c);
-    let w = rand_vec(&mut rng, batch * c);
-    let key_len = [2u32, 5, 1];
-    let klen = |d: &Device| Tensor::from_u32(&key_len, [batch], d).unwrap();
-    gradcheck(
-        &x,
-        &w,
-        |xv| {
-            ops::mean_pool(
-                &Tensor::from_f32(xv, [batch * seq, c], &Device::Cpu).unwrap(),
-                &klen(&Device::Cpu),
-                batch,
-            )
-            .unwrap()
-            .to_vec_f32()
-            .unwrap()
-        },
-        |_, wv| {
-            ops::mean_pool_bwd(
-                &Tensor::from_f32(wv, [batch, c], &Device::Cpu).unwrap(),
-                &klen(&Device::Cpu),
-                batch,
-                seq,
-            )
-            .unwrap()
-            .to_vec_f32()
-            .unwrap()
-        },
-    );
-}
-
-#[test]
-fn l2_norm_gradcheck() {
-    let (rows, c) = (4usize, 6usize);
-    let mut rng = StdRng::seed_from_u64(32);
-    let x = rand_vec(&mut rng, rows * c);
-    let w = rand_vec(&mut rng, rows * c);
-    gradcheck(
-        &x,
-        &w,
-        |xv| {
-            ops::l2_norm(
-                &Tensor::from_f32(xv, [rows, c], &Device::Cpu).unwrap(),
-                1e-12,
-            )
-            .unwrap()
-            .to_vec_f32()
-            .unwrap()
-        },
-        |xv, wv| {
-            ops::l2_norm_bwd(
-                &Tensor::from_f32(xv, [rows, c], &Device::Cpu).unwrap(),
-                &Tensor::from_f32(wv, [rows, c], &Device::Cpu).unwrap(),
-                1e-12,
-            )
-            .unwrap()
-            .to_vec_f32()
-            .unwrap()
-        },
-    );
 }
 
 #[test]

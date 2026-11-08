@@ -1,10 +1,3 @@
-//! Backward and optimizer ops — the training half of the op API.
-//!
-//! Split out of `ops/mod.rs` so the whole set can sit behind the `train`
-//! feature without scattering `#[cfg]` through the forward ops it used to be
-//! interleaved with. `ops/mod.rs` re-exports every one of these, so the public
-//! paths are unchanged: `forge::ops::adamw` still resolves, when `train` is on.
-
 use crate::backend::{cpu, wgpu as gpu};
 use crate::error::{ForgeError, Result};
 use crate::shape::Shape;
@@ -12,7 +5,6 @@ use crate::tensor::{CpuStorage, Storage, Tensor};
 
 use super::{cpu_f32, cpu_u32, f32_tensor, gpu_storage, same_device};
 
-/// Rows and last-dim width of a tensor, for the ops that reduce over rows.
 fn last_dim_rows(x: &Tensor) -> Result<(usize, usize)> {
     let dims = x.shape().dims();
     if dims.is_empty() {
@@ -22,7 +14,6 @@ fn last_dim_rows(x: &Tensor) -> Result<(usize, usize)> {
     Ok((x.shape().numel() / cols, cols))
 }
 
-/// GELU backward: dx = gelu'(x) * dy.
 pub fn gelu_bwd(x: &Tensor, dy: &Tensor) -> Result<Tensor> {
     same_device(&[x, dy])?;
     if x.shape() != dy.shape() {
@@ -38,9 +29,6 @@ pub fn gelu_bwd(x: &Tensor, dy: &Tensor) -> Result<Tensor> {
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
-/// Softmax backward from the forward *output* y: dx = y * (dy - sum(y*dy))
-/// per row. Causal masking needs no parameters here — masked forward outputs
-/// are exact zeros.
 pub fn softmax_bwd(y: &Tensor, dy: &Tensor) -> Result<Tensor> {
     same_device(&[y, dy])?;
     if y.shape() != dy.shape() {
@@ -61,7 +49,6 @@ pub fn softmax_bwd(y: &Tensor, dy: &Tensor) -> Result<Tensor> {
     Ok(f32_tensor(storage, y.shape().clone()))
 }
 
-/// LayerNorm backward: (dx, dgamma, dbeta).
 pub fn layernorm_bwd(
     x: &Tensor,
     gamma: &Tensor,
@@ -106,58 +93,6 @@ pub fn layernorm_bwd(
     }
 }
 
-pub fn mean_pool_bwd(dy: &Tensor, key_len: &Tensor, batch: usize, seq: usize) -> Result<Tensor> {
-    same_device(&[dy, key_len])?;
-    if key_len.dtype() != crate::dtype::DType::U32 || key_len.shape().numel() != batch {
-        return Err(ForgeError::Shape(
-            "mean_pool_bwd key_len must be a u32 tensor of `batch` entries".into(),
-        ));
-    }
-    let c = match dy.shape().dims() {
-        [b, c] if *b == batch => *c,
-        _ => {
-            return Err(ForgeError::Shape(
-                "mean_pool_bwd needs dy [batch, c]".into(),
-            ));
-        }
-    };
-    let storage = match dy.storage() {
-        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::mean_pool_bwd(cpu_f32(dy)?, cpu_u32(key_len)?, batch, seq, c).into(),
-        )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::mean_pool_bwd(
-            gpu_storage(dy)?,
-            gpu_storage(key_len)?,
-            batch,
-            seq,
-            c,
-        )),
-    };
-    Ok(f32_tensor(storage, Shape::new(&[batch * seq, c])))
-}
-
-pub fn l2_norm_bwd(x: &Tensor, dy: &Tensor, eps: f32) -> Result<Tensor> {
-    same_device(&[x, dy])?;
-    if x.shape() != dy.shape() {
-        return Err(ForgeError::Shape("l2_norm_bwd shape mismatch".into()));
-    }
-    let (rows, cols) = last_dim_rows(x)?;
-    let storage = match x.storage() {
-        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::l2_norm_bwd(cpu_f32(x)?, cpu_f32(dy)?, rows, cols, eps).into(),
-        )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::l2_norm_bwd(
-            gpu_storage(x)?,
-            gpu_storage(dy)?,
-            rows,
-            cols,
-            eps,
-        )),
-    };
-    Ok(f32_tensor(storage, x.shape().clone()))
-}
-
-/// Column sums over all leading dims: `[.., cols]` -> `[cols]`. Bias gradients.
 pub fn sum_rows(x: &Tensor) -> Result<Tensor> {
     let (rows, cols) = last_dim_rows(x)?;
     let storage = match x.storage() {
@@ -169,7 +104,6 @@ pub fn sum_rows(x: &Tensor) -> Result<Tensor> {
     Ok(f32_tensor(storage, Shape::new(&[cols])))
 }
 
-/// `dst[ids[r]] += src[r]`, in place. Embedding-table gradient scatter.
 pub fn scatter_add_rows(dst: &mut Tensor, ids: &Tensor, src: &Tensor) -> Result<()> {
     same_device(&[dst, ids, src])?;
     let (vocab, c) = match dst.shape().dims() {
@@ -205,7 +139,6 @@ pub fn scatter_add_rows(dst: &mut Tensor, ids: &Tensor, src: &Tensor) -> Result<
     }
 }
 
-/// Per-row NLL: `out[r] = -log(probs[r, ids[r]])`.
 pub fn gather_nll(probs: &Tensor, ids: &Tensor) -> Result<Tensor> {
     same_device(&[probs, ids])?;
     let (rows, cols) = last_dim_rows(probs)?;
@@ -226,7 +159,6 @@ pub fn gather_nll(probs: &Tensor, ids: &Tensor) -> Result<Tensor> {
     Ok(f32_tensor(storage, Shape::new(&[rows])))
 }
 
-/// Cross-entropy backward: dlogits = (probs - onehot(ids)) * scale.
 pub fn ce_bwd(probs: &Tensor, ids: &Tensor, scale: f32) -> Result<Tensor> {
     same_device(&[probs, ids])?;
     let (rows, cols) = last_dim_rows(probs)?;
@@ -248,8 +180,6 @@ pub fn ce_bwd(probs: &Tensor, ids: &Tensor, scale: f32) -> Result<Tensor> {
     Ok(f32_tensor(storage, probs.shape().clone()))
 }
 
-/// Inverted dropout with a deterministic counter RNG (identical masks on
-/// both backends). Apply the same (p, seed) to dy for the backward pass.
 pub fn dropout(x: &Tensor, p: f32, seed: u32) -> Result<Tensor> {
     if !(0.0..1.0).contains(&p) {
         return Err(ForgeError::Shape(format!("dropout p {p} outside [0, 1)")));
@@ -257,10 +187,6 @@ pub fn dropout(x: &Tensor, p: f32, seed: u32) -> Result<Tensor> {
     if p == 0.0 {
         return Ok(x.clone());
     }
-    // Compute the keep-scale once on the CPU and hand the same bits to both
-    // backends: GPU division isn't guaranteed correctly-rounded (unlike
-    // multiplication), so an independent 1.0/(1.0-p) on the GPU can be a
-    // few ULP off from the CPU's, breaking bit-for-bit parity.
     let scale = 1.0f32 / (1.0 - p);
     let n = x.shape().numel();
     let storage = match x.storage() {
@@ -272,13 +198,10 @@ pub fn dropout(x: &Tensor, p: f32, seed: u32) -> Result<Tensor> {
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
-/// split_heads backward for one of q/k/v (`which` in 0..3):
-/// d [h, t, hd] -> [t, 3c] with the other thirds zero.
 pub fn unsplit_head(d: &Tensor, which: usize) -> Result<Tensor> {
     unsplit_head_batched(d, which, 1)
 }
 
-/// [`unsplit_head`] over a stacked batch: d [b*h, t, hd] -> [b*t, 3c].
 pub fn unsplit_head_batched(d: &Tensor, which: usize, batch: usize) -> Result<Tensor> {
     let (bh, t, hd) = match d.shape().dims() {
         [bh, t, hd] => (*bh, *t, *hd),
@@ -308,55 +231,20 @@ pub fn unsplit_head_batched(d: &Tensor, which: usize, batch: usize) -> Result<Te
     Ok(f32_tensor(storage, shape))
 }
 
-/// merge_heads backward: dy [t, c] -> [h, t, hd].
 pub fn unmerge_heads(dy: &Tensor, h: usize) -> Result<Tensor> {
     unmerge_heads_batched(dy, h, 1)
 }
 
-/// [`unmerge_heads`] over a stacked batch: dy [b*t, c] -> [b*h, t, hd].
 pub fn unmerge_heads_batched(dy: &Tensor, h: usize, batch: usize) -> Result<Tensor> {
-    let (bt, c) = match dy.shape().dims() {
-        [bt, c] => (*bt, *c),
-        _ => return Err(ForgeError::Shape("unmerge_heads needs [b*t, c]".into())),
-    };
-    if c % h != 0 {
-        return Err(ForgeError::Shape(format!("unmerge_heads c={c} % h={h}")));
-    }
-    if batch == 0 || bt % batch != 0 {
-        return Err(ForgeError::Shape(format!(
-            "unmerge_heads: {bt} rows not divisible into {batch} sequences"
-        )));
-    }
-    let t = bt / batch;
-    let shape = Shape::new(&[batch * h, t, c / h]);
-    let storage = match dy.storage() {
-        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::unmerge_heads(cpu_f32(dy)?, batch, t, c, h).into(),
-        )),
-        Storage::Wgpu(_) => {
-            Storage::Wgpu(gpu::ops::unmerge_heads(gpu_storage(dy)?, batch, t, c, h))
-        }
-    };
-    Ok(f32_tensor(storage, shape))
+    super::split_heads_single(dy, h, batch)
 }
 
-/// Sum of squares of all elements (for the global gradient norm).
-/// Training-path op with a sync readback — WebGPU tensors are native-only
-/// here (browser training is out of scope for 1.0).
 pub fn sumsq(x: &Tensor) -> Result<f32> {
     Ok(sumsq_all(std::slice::from_ref(x))?[0])
 }
 
-/// [`sumsq`] over many tensors, in **one** GPU round trip.
-///
-/// The global gradient norm needs this for every parameter at once, and a
-/// round trip is ~90 µs against a reduction that takes single-digit µs — so
-/// per-tensor, GPT-2's 148 parameters cost more in fence waits than the whole
-/// optimizer step does in arithmetic. Every reduction is recorded first, then
-/// all the partials come back together.
 pub fn sumsq_all(xs: &[Tensor]) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; xs.len()];
-    // Reductions for the GPU tensors, recorded now and read once below.
     let mut pending: Vec<(usize, Tensor)> = Vec::new();
     for (i, x) in xs.iter().enumerate() {
         match x.storage() {
@@ -384,7 +272,6 @@ pub fn sumsq_all(xs: &[Tensor]) -> Result<Vec<f32>> {
         return Ok(out);
     }
     let tensors: Vec<Tensor> = pending.iter().map(|(_, t)| t.clone()).collect();
-    // Sync facade over the batched async read; native-only, as above.
     let all = pollster::block_on(Tensor::to_vec_f32_batch(&tensors))?;
     for ((i, _), vals) in pending.iter().zip(all) {
         out[*i] = vals.iter().sum();
@@ -392,7 +279,6 @@ pub fn sumsq_all(xs: &[Tensor]) -> Result<Vec<f32>> {
     Ok(out)
 }
 
-/// y = x * alpha.
 pub fn scale(x: &Tensor, alpha: f32) -> Result<Tensor> {
     let n = x.shape().numel();
     let storage = match x.storage() {
@@ -408,8 +294,6 @@ pub fn scale(x: &Tensor, alpha: f32) -> Result<Tensor> {
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
-/// AdamW step with decoupled weight decay, updating param/m/v in place.
-/// `step` is 1-based.
 #[allow(clippy::too_many_arguments)]
 pub fn adamw(
     param: &mut Tensor,

@@ -78,6 +78,7 @@ pub fn gelu(x: &WgpuStorage, n: usize) -> WgpuStorage {
 pub fn matmul(
     a: &WgpuStorage,
     b: &WgpuStorage,
+    b_q4: bool,
     bias: Option<&WgpuStorage>,
     m: usize,
     k: usize,
@@ -91,7 +92,7 @@ pub fn matmul(
 ) -> WgpuStorage {
     let out = alloc(&a.ctx, batch * m * n);
     matmul_into(
-        &out, a, b, bias, m, k, n, batch, a_stride, b_stride, trans_a, trans_b, alpha, 0, n,
+        &out, a, b, b_q4, bias, m, k, n, batch, a_stride, b_stride, trans_a, trans_b, alpha, 0, n,
     );
     out
 }
@@ -104,6 +105,7 @@ pub fn matmul_into(
     out: &WgpuStorage,
     a: &WgpuStorage,
     b: &WgpuStorage,
+    b_q4: bool,
     bias: Option<&WgpuStorage>,
     m: usize,
     k: usize,
@@ -132,12 +134,14 @@ pub fn matmul_into(
     } else {
         batch * a_stride
     };
-    let b_numel = if b_stride == 0 {
+    let b_binding = if b_q4 {
+        (b.buffer(), 0, crate::dtype::Q4::device_bytes(k * n))
+    } else if b_stride == 0 {
         // Physical element count of one B; with b_rows the logical (k or n)
         // undercounts, but an unbatched B is always bound whole below.
-        k * n
+        bind(b, k * n)
     } else {
-        batch * b_stride
+        bind(b, batch * b_stride)
     };
     let params = [
         m as u32,
@@ -153,14 +157,30 @@ pub fn matmul_into(
         n_out as u32,
         trans_a as u32,
     ];
+    if b_q4 && batch == 1 && m <= 4 && !trans_a && (if trans_b { k % 8 } else { n % 8 }) == 0 {
+        q4_gemv_into(
+            out,
+            a,
+            b_binding,
+            (bias_binding, bias.is_some()),
+            m,
+            k,
+            n,
+            trans_b,
+            alpha,
+            n_off,
+            n_out,
+        );
+        return;
+    }
     if use_gemv(m, n, batch) {
         gemv_into(
             out,
             a,
-            b,
+            b_binding,
+            b_q4,
             bias_binding,
             a_numel,
-            b_numel,
             &params,
             m,
             k,
@@ -173,11 +193,11 @@ pub fn matmul_into(
         return;
     }
     ctx.dispatch(
-        "matmul",
+        if b_q4 { "matmul_q4" } else { "matmul" },
         &params,
         &[
             bind(a, a_numel),
-            bind(b, b_numel),
+            b_binding,
             bias_binding,
             bind(out, batch * m * n_out),
         ],
@@ -236,10 +256,10 @@ fn gemv_split(m: usize, k: usize, n: usize, batch: usize) -> usize {
 fn gemv_into(
     out: &WgpuStorage,
     a: &WgpuStorage,
-    b: &WgpuStorage,
+    b_binding: (&wgpu::Buffer, usize, usize),
+    b_q4: bool,
     bias_binding: (&wgpu::Buffer, usize, usize),
     a_numel: usize,
-    b_numel: usize,
     matmul_params: &[u32; 12],
     m: usize,
     k: usize,
@@ -262,13 +282,14 @@ fn gemv_into(
         (nsplit * nrowblk) as u32,
         batch as u32,
     );
+    let kernel = if b_q4 { "gemv_q4" } else { "gemv" };
     if nsplit == 1 {
         ctx.dispatch(
-            "gemv",
+            kernel,
             &params,
             &[
                 bind(a, a_numel),
-                bind(b, b_numel),
+                b_binding,
                 bias_binding,
                 bind(out, batch * m * n_out),
             ],
@@ -283,11 +304,11 @@ fn gemv_into(
     let per_split = batch * m * n;
     let partials = alloc(ctx, nsplit * per_split);
     ctx.dispatch(
-        "gemv",
+        kernel,
         &params,
         &[
             bind(a, a_numel),
-            bind(b, b_numel),
+            b_binding,
             bias_binding,
             bind(&partials, nsplit * per_split),
         ],
@@ -312,6 +333,93 @@ fn gemv_into(
             bind(out, batch * m * n_out),
         ],
         linear_grid(per_split),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn q4_gemv_into(
+    out: &WgpuStorage,
+    a: &WgpuStorage,
+    b_binding: (&wgpu::Buffer, usize, usize),
+    (bias_binding, has_bias): ((&wgpu::Buffer, usize, usize), bool),
+    m: usize,
+    k: usize,
+    n: usize,
+    trans_b: bool,
+    alpha: f32,
+    n_off: usize,
+    n_out: usize,
+) {
+    let ctx = &a.ctx;
+    let blocks = if trans_b {
+        n.div_ceil(GEMV_COLS)
+    } else {
+        n.div_ceil(8 * GEMV_COLS)
+    };
+    let want = GEMV_TARGET_GROUPS
+        .div_ceil(blocks)
+        .clamp(1, (k / GEMV_MIN_SPLIT_K).max(1));
+    let per = k.div_ceil(want).next_multiple_of(8);
+    let nsplit = k.div_ceil(per);
+    let params = [
+        m as u32,
+        k as u32,
+        n as u32,
+        trans_b as u32,
+        has_bias as u32,
+        alpha.to_bits(),
+        n_off as u32,
+        n_out as u32,
+        nsplit as u32,
+        per as u32,
+        0,
+        0,
+    ];
+    let grid = (blocks as u32, nsplit as u32, 1);
+    if nsplit == 1 {
+        ctx.dispatch(
+            "q4_gemv",
+            &params,
+            &[
+                bind(a, m * k),
+                b_binding,
+                bias_binding,
+                bind(out, m * n_out),
+            ],
+            grid,
+        );
+        return;
+    }
+    let partials = alloc(ctx, nsplit * m * n);
+    ctx.dispatch(
+        "q4_gemv",
+        &params,
+        &[
+            bind(a, m * k),
+            b_binding,
+            bias_binding,
+            bind(&partials, nsplit * m * n),
+        ],
+        grid,
+    );
+    ctx.dispatch(
+        "gemv_reduce",
+        &[
+            m as u32,
+            n as u32,
+            1,
+            nsplit as u32,
+            has_bias as u32,
+            alpha.to_bits(),
+            n_off as u32,
+            n_out as u32,
+        ],
+        &[
+            bind(&partials, nsplit * m * n),
+            bias_binding,
+            bind(out, m * n_out),
+        ],
+        linear_grid(m * n),
     );
 }
 
@@ -362,39 +470,6 @@ pub fn softmax_masked(
     out
 }
 
-pub fn mean_pool(
-    x: &WgpuStorage,
-    key_len: &WgpuStorage,
-    batch: usize,
-    seq: usize,
-    cols: usize,
-) -> WgpuStorage {
-    let out = alloc(&x.ctx, batch * cols);
-    x.ctx.dispatch(
-        "mean_pool",
-        &[batch as u32, seq as u32, cols as u32, 0],
-        &[
-            bind(x, batch * seq * cols),
-            bind(key_len, batch),
-            bind(&out, batch * cols),
-        ],
-        linear_grid(batch * cols),
-    );
-    out
-}
-
-pub fn l2_norm(x: &WgpuStorage, rows: usize, cols: usize, eps: f32) -> WgpuStorage {
-    let n = rows * cols;
-    let out = alloc(&x.ctx, n);
-    x.ctx.dispatch(
-        "l2_norm",
-        &[rows as u32, cols as u32, eps.to_bits(), 0],
-        &[bind(x, n), bind(&out, n)],
-        row_grid(rows),
-    );
-    out
-}
-
 pub fn layernorm(
     x: &WgpuStorage,
     gamma: &WgpuStorage,
@@ -426,6 +501,7 @@ pub fn layernorm(
 pub fn embedding(
     ids: &WgpuStorage,
     chunks: &[(&WgpuStorage, usize)], // (buffer, rows in this chunk)
+    q4: bool,
     chunk_rows: usize,
     wpe: Option<&WgpuStorage>,
     t: usize,
@@ -447,8 +523,13 @@ pub fn embedding(
     };
     for (i, (chunk, rows)) in chunks.iter().enumerate() {
         let row_start = i * chunk_rows;
+        let table = if q4 {
+            (chunk.buffer(), 0, crate::dtype::Q4::device_bytes(rows * c))
+        } else {
+            bind(chunk, rows * c)
+        };
         ctx.dispatch(
-            "embedding",
+            if q4 { "embedding_q4" } else { "embedding" },
             &[
                 t as u32,
                 c as u32,
@@ -459,12 +540,7 @@ pub fn embedding(
                 seq as u32,
                 0,
             ],
-            &[
-                bind(ids, t),
-                bind(chunk, rows * c),
-                wpe_binding,
-                bind(&out, n),
-            ],
+            &[bind(ids, t), table, wpe_binding, bind(&out, n)],
             linear_grid(n),
         );
     }
@@ -592,42 +668,6 @@ pub fn layernorm_bwd(
         linear_grid(cols),
     );
     (dx, dgamma, dbeta)
-}
-
-pub fn mean_pool_bwd(
-    dy: &WgpuStorage,
-    key_len: &WgpuStorage,
-    batch: usize,
-    seq: usize,
-    cols: usize,
-) -> WgpuStorage {
-    let n = batch * seq * cols;
-    let out = alloc(&dy.ctx, n);
-    dy.ctx.dispatch(
-        "mean_pool_bwd",
-        &[batch as u32, seq as u32, cols as u32, 0],
-        &[bind(dy, batch * cols), bind(key_len, batch), bind(&out, n)],
-        linear_grid(n),
-    );
-    out
-}
-
-pub fn l2_norm_bwd(
-    x: &WgpuStorage,
-    dy: &WgpuStorage,
-    rows: usize,
-    cols: usize,
-    eps: f32,
-) -> WgpuStorage {
-    let n = rows * cols;
-    let out = alloc(&x.ctx, n);
-    x.ctx.dispatch(
-        "l2_norm_bwd",
-        &[rows as u32, cols as u32, eps.to_bits(), 0],
-        &[bind(x, n), bind(dy, n), bind(&out, n)],
-        row_grid(rows),
-    );
-    out
 }
 
 pub fn sum_rows(x: &WgpuStorage, rows: usize, cols: usize) -> WgpuStorage {

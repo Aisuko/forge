@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::backend::wgpu::{OFFSET_ALIGN_BYTES, PooledBuffer, WgpuContext};
 use crate::device::Device;
-use crate::dtype::DType;
+use crate::dtype::{DType, Q4};
 use crate::error::{ForgeError, Result};
 use crate::shape::Shape;
 
@@ -99,6 +99,44 @@ impl Tensor {
         })
     }
 
+    pub fn from_q4(q: &Q4, shape: impl Into<Shape>, device: &Device) -> Result<Tensor> {
+        let shape = shape.into();
+        if shape.numel() != q.numel() {
+            return Err(ForgeError::Shape(format!(
+                "q4 length {} does not match shape {shape}",
+                q.numel()
+            )));
+        }
+        match device {
+            Device::Cpu => Tensor::from_f32(&q.dequant(), shape, device),
+            Device::Wgpu(ctx) => Ok(Tensor {
+                storage: Storage::Wgpu(WgpuStorage {
+                    ctx: ctx.clone(),
+                    buf: Arc::new(ctx.upload(bytemuck::cast_slice(q.blocks()))),
+                    offset: 0,
+                }),
+                shape,
+                dtype: DType::Q4,
+            }),
+        }
+    }
+
+    fn host_f32(&self, bytes: &[u8]) -> Vec<f32> {
+        match self.dtype {
+            DType::Q4 => {
+                Q4::from_blocks(self.shape.numel(), bytemuck::pod_collect_to_vec(bytes)).dequant()
+            }
+            _ => bytemuck::pod_collect_to_vec(bytes),
+        }
+    }
+
+    fn device_bytes(&self) -> usize {
+        match self.dtype {
+            DType::Q4 => Q4::device_bytes(self.shape.numel()),
+            _ => self.shape.numel() * 4,
+        }
+    }
+
     pub fn zeros(shape: impl Into<Shape>, device: &Device) -> Result<Tensor> {
         let shape = shape.into();
         Tensor::from_f32(&vec![0.0f32; shape.numel()], shape, device)
@@ -127,7 +165,7 @@ impl Tensor {
     /// only CPU tensors can be read synchronously — use
     /// [`Tensor::to_vec_f32_async`] for WebGPU tensors there.
     pub fn to_vec_f32(&self) -> Result<Vec<f32>> {
-        if self.dtype != DType::F32 {
+        if self.dtype == DType::U32 {
             return Err(ForgeError::Shape("to_vec_f32 on non-f32 tensor".into()));
         }
         match &self.storage {
@@ -135,10 +173,8 @@ impl Tensor {
             Storage::Cpu(_) => unreachable!("dtype checked above"),
             #[cfg(not(target_arch = "wasm32"))]
             Storage::Wgpu(s) => {
-                let bytes = s
-                    .ctx
-                    .readback(&s.buf, s.offset * 4, self.shape.numel() * 4)?;
-                Ok(bytemuck::pod_collect_to_vec(&bytes))
+                let bytes = s.ctx.readback(&s.buf, s.offset * 4, self.device_bytes())?;
+                Ok(self.host_f32(&bytes))
             }
             #[cfg(target_arch = "wasm32")]
             Storage::Wgpu(_) => Err(ForgeError::Wgpu(
@@ -171,7 +207,7 @@ impl Tensor {
     /// Async readback — the primary form (identical result to `to_vec_f32`);
     /// on wasm the browser event loop drives the buffer mapping.
     pub async fn to_vec_f32_async(&self) -> Result<Vec<f32>> {
-        if self.dtype != DType::F32 {
+        if self.dtype == DType::U32 {
             return Err(ForgeError::Shape("to_vec_f32 on non-f32 tensor".into()));
         }
         match &self.storage {
@@ -180,9 +216,9 @@ impl Tensor {
             Storage::Wgpu(s) => {
                 let bytes = s
                     .ctx
-                    .readback_async(&s.buf, s.offset * 4, self.shape.numel() * 4)
+                    .readback_async(&s.buf, s.offset * 4, self.device_bytes())
                     .await?;
-                Ok(bytemuck::pod_collect_to_vec(&bytes))
+                Ok(self.host_f32(&bytes))
             }
         }
     }
@@ -271,6 +307,9 @@ impl Tensor {
                 "narrow_rows needs a rank-2 tensor".into(),
             ));
         }
+        if self.dtype == DType::Q4 {
+            return Err(ForgeError::Shape("narrow_rows on a q4 tensor".into()));
+        }
         let (rows, cols) = (self.shape.dim(0), self.shape.dim(1));
         if start + count > rows {
             return Err(ForgeError::Shape(format!(
@@ -297,7 +336,7 @@ impl Tensor {
             }
             Storage::Wgpu(s) => {
                 let offset = s.offset + start * cols;
-                if !(offset * self.dtype.size_bytes()).is_multiple_of(OFFSET_ALIGN_BYTES) {
+                if !(offset * 4).is_multiple_of(OFFSET_ALIGN_BYTES) {
                     return Err(ForgeError::Wgpu(format!(
                         "narrow_rows offset {offset} elems violates {OFFSET_ALIGN_BYTES}-byte alignment"
                     )));

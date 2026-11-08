@@ -190,27 +190,6 @@ impl Tape {
         ))
     }
 
-    pub fn mean_pool(&mut self, x: &TVar, key_len: &Tensor, batch: usize) -> Result<TVar> {
-        let seq = x.t.shape().dim(0) / batch;
-        let out = ops::mean_pool(&x.t, key_len, batch)?;
-        let ix = x.id;
-        let key_len = key_len.clone();
-        Ok(self.record(
-            out,
-            Box::new(move |dy| Ok(vec![(ix, ops::mean_pool_bwd(dy, &key_len, batch, seq)?)])),
-        ))
-    }
-
-    pub fn l2_norm(&mut self, x: &TVar, eps: f32) -> Result<TVar> {
-        let out = ops::l2_norm(&x.t, eps)?;
-        let ix = x.id;
-        let xt = x.t.clone();
-        Ok(self.record(
-            out,
-            Box::new(move |dy| Ok(vec![(ix, ops::l2_norm_bwd(&xt, dy, eps)?)])),
-        ))
-    }
-
     pub fn split_heads(&mut self, qkv: &TVar, n_head: usize) -> Result<(TVar, TVar, TVar)> {
         self.split_heads_batched(qkv, n_head, 1)
     }
