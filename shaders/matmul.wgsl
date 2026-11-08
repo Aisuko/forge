@@ -45,6 +45,10 @@ struct Params {
 @group(0) @binding(3) var<storage, read> bias: array<f32>;
 @group(0) @binding(4) var<storage, read_write> c: array<f32>;
 
+fn bval(i: u32) -> f32 {
+    return b[i];
+}
+
 const BM: u32 = 64u; // output rows per workgroup
 const BN: u32 = 64u; // output cols per workgroup
 const BK: u32 = 16u; // k-tile depth
@@ -121,9 +125,9 @@ fn main(
             var v = 0.0;
             if (gk < p.k && gcol < p.n) {
                 if (p.trans_b == 0u) {
-                    v = b[b_base + gk * p.n + gcol];
+                    v = bval(b_base + gk * p.n + gcol);
                 } else {
-                    v = b[b_base + gcol * p.k + gk];
+                    v = bval(b_base + gcol * p.k + gk);
                 }
             }
             bsub[kk * BN + cc] = v;

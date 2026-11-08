@@ -1,8 +1,5 @@
-//! Backend-agnostic tensor operations. Each op validates shapes, dispatches
-//! to the CPU reference or the WGPU kernels, and returns a tensor on the same
-//! device as its inputs.
-
 use crate::backend::{cpu, wgpu as gpu};
+use crate::dtype::DType;
 use crate::error::{ForgeError, Result};
 use crate::shape::Shape;
 use crate::tensor::{CpuStorage, Storage, Tensor, WgpuStorage};
@@ -22,6 +19,15 @@ pub(crate) fn cpu_u32(t: &Tensor) -> Result<&[u32]> {
 }
 
 pub(crate) fn gpu_storage(t: &Tensor) -> Result<&WgpuStorage> {
+    if t.dtype() == DType::Q4 {
+        return Err(ForgeError::Shape(
+            "q4 tensors are only matmul weights".into(),
+        ));
+    }
+    gpu_weight(t)
+}
+
+fn gpu_weight(t: &Tensor) -> Result<&WgpuStorage> {
     match t.storage() {
         Storage::Wgpu(s) => Ok(s),
         _ => Err(ForgeError::Device("expected WGPU tensor".into())),
@@ -46,11 +52,10 @@ pub(crate) fn f32_tensor(storage: Storage, shape: Shape) -> Tensor {
     Tensor {
         storage,
         shape,
-        dtype: crate::dtype::DType::F32,
+        dtype: DType::F32,
     }
 }
 
-/// Elementwise `a + b`; shapes must match exactly.
 pub fn add(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     same_device(&[a, b])?;
     if a.shape() != b.shape() {
@@ -68,7 +73,6 @@ pub fn add(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     Ok(f32_tensor(storage, a.shape().clone()))
 }
 
-/// GELU (tanh approximation).
 pub fn gelu(x: &Tensor) -> Result<Tensor> {
     let n = x.shape().numel();
     let storage = match x.storage() {
@@ -80,16 +84,9 @@ pub fn gelu(x: &Tensor) -> Result<Tensor> {
 
 #[derive(Clone, Copy)]
 pub struct MatmulSpec {
-    /// Interpret A as [k, m] instead of [m, k] (used by backward passes:
-    /// dB = Aᵀ·dY without materializing the transpose).
     pub trans_a: bool,
-    /// Interpret B as [n, k] instead of [k, n].
     pub trans_b: bool,
-    /// Scale applied to the product (before bias).
     pub alpha: f32,
-    /// Logical row count of each batch element of B, when B is a view over
-    /// a larger preallocated buffer (KV cache): only the first `b_rows` rows
-    /// are read, while the batch stride comes from the physical shape.
     pub b_rows: Option<usize>,
 }
 
@@ -104,11 +101,6 @@ impl Default for MatmulSpec {
     }
 }
 
-/// Batched matmul with optional A/B-transpose, scaling, and bias.
-///
-/// A: `[m, k]` or `[batch, m, k]` (`[k, m]` with `trans_a`); B: `[k, n]`
-/// (`[n, k]` transposed), optionally batched. A rank-2 operand broadcasts
-/// across the batch. Bias: `[n]`.
 pub fn matmul(a: &Tensor, b: &Tensor, bias: Option<&Tensor>, spec: MatmulSpec) -> Result<Tensor> {
     same_device(&[a, b])?;
     if let Some(bias) = bias {
@@ -117,6 +109,12 @@ pub fn matmul(a: &Tensor, b: &Tensor, bias: Option<&Tensor>, spec: MatmulSpec) -
     let (batch_a, ad0, ad1) = rank23_dims(a, "A")?;
     let (m, k) = if spec.trans_a { (ad1, ad0) } else { (ad0, ad1) };
     let (batch_b, bd0_phys, bd1) = rank23_dims(b, "B")?;
+    let b_q4 = b.dtype() == DType::Q4;
+    if b_q4 && (batch_b.is_some() || spec.b_rows.is_some()) {
+        return Err(ForgeError::Shape(
+            "q4 matmul B must be a whole rank-2 weight".into(),
+        ));
+    }
     let bd0 = match spec.b_rows {
         Some(rows) if rows <= bd0_phys => rows,
         Some(rows) => {
@@ -144,7 +142,6 @@ pub fn matmul(a: &Tensor, b: &Tensor, bias: Option<&Tensor>, spec: MatmulSpec) -
             )));
         }
     };
-    // Batch strides come from the *physical* shapes.
     let a_stride = if batch_a.is_some() { ad0 * ad1 } else { 0 };
     let b_stride = if batch_b.is_some() { bd0_phys * bd1 } else { 0 };
     if let Some(bias) = bias
@@ -185,7 +182,8 @@ pub fn matmul(a: &Tensor, b: &Tensor, bias: Option<&Tensor>, spec: MatmulSpec) -
             let bias = bias.map(gpu_storage).transpose()?;
             Storage::Wgpu(gpu::ops::matmul(
                 gpu_storage(a)?,
-                gpu_storage(b)?,
+                gpu_weight(b)?,
+                b_q4,
                 bias,
                 m,
                 k,
@@ -213,9 +211,6 @@ fn rank23_dims(t: &Tensor, which: &str) -> Result<(Option<usize>, usize, usize)>
     }
 }
 
-/// Softmax over the last dim. With `causal`, row r (query position
-/// `r % q_len`, where q_len is the second-to-last dim) sees key j only when
-/// `j <= query + off`; `off` is `key_len - query_len` when using a KV cache.
 pub fn softmax(x: &Tensor, causal: bool, off: usize) -> Result<Tensor> {
     let dims = x.shape().dims();
     if dims.is_empty() {
@@ -246,7 +241,7 @@ pub fn softmax(x: &Tensor, causal: bool, off: usize) -> Result<Tensor> {
 
 pub fn softmax_masked(x: &Tensor, key_len: &Tensor, batch: usize) -> Result<Tensor> {
     same_device(&[x, key_len])?;
-    if key_len.dtype() != crate::dtype::DType::U32 {
+    if key_len.dtype() != DType::U32 {
         return Err(ForgeError::Shape(
             "softmax_masked key_len must be u32".into(),
         ));
@@ -285,59 +280,6 @@ pub fn softmax_masked(x: &Tensor, key_len: &Tensor, batch: usize) -> Result<Tens
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
-pub fn mean_pool(x: &Tensor, key_len: &Tensor, batch: usize) -> Result<Tensor> {
-    same_device(&[x, key_len])?;
-    if key_len.dtype() != crate::dtype::DType::U32 {
-        return Err(ForgeError::Shape("mean_pool key_len must be u32".into()));
-    }
-    if key_len.shape().numel() != batch {
-        return Err(ForgeError::Shape(format!(
-            "mean_pool key_len has {} entries, expected batch {batch}",
-            key_len.shape().numel()
-        )));
-    }
-    let (bt, c) = match x.shape().dims() {
-        [bt, c] => (*bt, *c),
-        _ => return Err(ForgeError::Shape("mean_pool needs [b*t, c]".into())),
-    };
-    if batch == 0 || bt % batch != 0 {
-        return Err(ForgeError::Shape(format!(
-            "mean_pool: {bt} rows not divisible into {batch} sequences"
-        )));
-    }
-    let seq = bt / batch;
-    let storage = match x.storage() {
-        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::mean_pool(cpu_f32(x)?, cpu_u32(key_len)?, batch, seq, c).into(),
-        )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::mean_pool(
-            gpu_storage(x)?,
-            gpu_storage(key_len)?,
-            batch,
-            seq,
-            c,
-        )),
-    };
-    Ok(f32_tensor(storage, Shape::new(&[batch, c])))
-}
-
-pub fn l2_norm(x: &Tensor, eps: f32) -> Result<Tensor> {
-    let dims = x.shape().dims();
-    if dims.is_empty() {
-        return Err(ForgeError::Shape("l2_norm on scalar".into()));
-    }
-    let cols = dims[dims.len() - 1];
-    let rows = x.shape().numel() / cols;
-    let storage = match x.storage() {
-        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
-            cpu::l2_norm(cpu_f32(x)?, rows, cols, eps).into(),
-        )),
-        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::l2_norm(gpu_storage(x)?, rows, cols, eps)),
-    };
-    Ok(f32_tensor(storage, x.shape().clone()))
-}
-
-/// LayerNorm over the last dim.
 pub fn layernorm(x: &Tensor, gamma: &Tensor, beta: &Tensor, eps: f32) -> Result<Tensor> {
     same_device(&[x, gamma, beta])?;
     let dims = x.shape().dims();
@@ -372,7 +314,6 @@ pub fn layernorm(x: &Tensor, gamma: &Tensor, beta: &Tensor, eps: f32) -> Result<
     Ok(f32_tensor(storage, x.shape().clone()))
 }
 
-/// Fused token + positional embedding: `out[t] = wte[ids[t]] + wpe[t + pos]`.
 pub fn embedding(ids: &Tensor, wte: &Tensor, wpe: Option<&Tensor>, pos: usize) -> Result<Tensor> {
     let chunk_rows = wte
         .shape()
@@ -383,13 +324,6 @@ pub fn embedding(ids: &Tensor, wte: &Tensor, wpe: Option<&Tensor>, pos: usize) -
     embedding_chunked(ids, std::slice::from_ref(wte), chunk_rows, wpe, pos, 0)
 }
 
-/// Embedding gather from a row-chunked table. `chunks[i]` holds rows
-/// [i * chunk_rows, ...) of the full [vocab, c] table — chunking keeps every
-/// GPU binding under max_storage_buffer_binding_size (GPT-2's wte alone is
-/// ~147 MiB, above the WebGPU default and llvmpipe's hard 128 MiB limit).
-/// `seq` is the length of one sequence when `ids` holds a stacked training
-/// batch, so each sequence's positions restart; 0 means "one sequence", the
-/// inference case.
 #[allow(clippy::too_many_arguments)]
 pub fn embedding_chunked(
     ids: &Tensor,
@@ -460,11 +394,12 @@ pub fn embedding_chunked(
             let wpe = wpe.map(gpu_storage).transpose()?;
             let gpu_chunks: Vec<(&crate::tensor::WgpuStorage, usize)> = chunks
                 .iter()
-                .map(|ch| Ok((gpu_storage(ch)?, ch.shape().dim(0))))
+                .map(|ch| Ok((gpu_weight(ch)?, ch.shape().dim(0))))
                 .collect::<Result<_>>()?;
             Storage::Wgpu(gpu::ops::embedding(
                 gpu_storage(ids)?,
                 &gpu_chunks,
+                chunks[0].dtype() == DType::Q4,
                 chunk_rows,
                 wpe,
                 t,
@@ -478,9 +413,23 @@ pub fn embedding_chunked(
     Ok(f32_tensor(storage, Shape::new(&[t, c])))
 }
 
-/// a [m, k] @ concat(chunks)^T -> [m, sum n_i], chunks each [n_i, k].
-/// The column-chunked equivalent of `matmul` with `trans_b` — used for the
-/// weight-tied LM head over a chunked wte.
+pub fn rows(x: &Tensor, start: usize, count: usize) -> Result<Tensor> {
+    let n = match x.shape().dims() {
+        [n, _] => *n,
+        _ => return Err(ForgeError::Shape("rows needs a rank-2 tensor".into())),
+    };
+    if count == 0 || start + count > n {
+        return Err(ForgeError::Shape(format!(
+            "rows {start}+{count} out of bounds for {n} rows"
+        )));
+    }
+    if let Ok(t) = x.narrow_rows(start, count) {
+        return Ok(t);
+    }
+    let ids: Vec<u32> = (start..start + count).map(|i| i as u32).collect();
+    embedding(&Tensor::from_u32(&ids, [count], &x.device())?, x, None, 0)
+}
+
 pub fn matmul_chunked_transb(a: &Tensor, chunks: &[Tensor], alpha: f32) -> Result<Tensor> {
     if chunks.is_empty() {
         return Err(ForgeError::Shape("matmul needs at least one chunk".into()));
@@ -543,7 +492,8 @@ pub fn matmul_chunked_transb(a: &Tensor, chunks: &[Tensor], alpha: f32) -> Resul
                 gpu::ops::matmul_into(
                     &out,
                     gpu_storage(a)?,
-                    gpu_storage(ch)?,
+                    gpu_weight(ch)?,
+                    ch.dtype() == DType::Q4,
                     None,
                     m,
                     k,
@@ -564,8 +514,6 @@ pub fn matmul_chunked_transb(a: &Tensor, chunks: &[Tensor], alpha: f32) -> Resul
     }
 }
 
-/// Append `src` [h, t, hd] into the preallocated cache [h, cap, hd] at row
-/// offset `len` within each head, in place. Used by KV-cache decode.
 pub fn kv_append(cache: &mut Tensor, src: &Tensor, len: usize) -> Result<()> {
     same_device(&[cache, src])?;
     let (h, cap, hd) = match cache.shape().dims() {
@@ -603,18 +551,10 @@ pub fn kv_append(cache: &mut Tensor, src: &Tensor, len: usize) -> Result<()> {
     }
 }
 
-/// qkv [t, 3c] -> (q, k, v) each [h, t, c/h].
 pub fn split_heads(qkv: &Tensor, n_head: usize) -> Result<(Tensor, Tensor, Tensor)> {
     split_heads_batched(qkv, n_head, 1)
 }
 
-/// qkv [b*t, 3c] -> (q, k, v) each [b*h, t, c/h].
-///
-/// `batch` is the training-batch axis: `batch` independent sequences of equal
-/// length, stacked as rows. It folds into the *same* leading axis the heads
-/// already occupy, which is the point — every op downstream (the attention
-/// matmuls, the softmax) sees one flat rank-3 batch and needs no rank-4
-/// support. `batch = 1` is exactly [`split_heads`].
 pub fn split_heads_batched(
     qkv: &Tensor,
     n_head: usize,
@@ -657,12 +597,10 @@ pub fn split_heads_batched(
     }
 }
 
-/// x [h, t, hd] -> [t, h*hd].
 pub fn merge_heads(x: &Tensor) -> Result<Tensor> {
     merge_heads_batched(x, 1)
 }
 
-/// x [b*h, t, hd] -> [b*t, h*hd]. The inverse of [`split_heads_batched`].
 pub fn merge_heads_batched(x: &Tensor, batch: usize) -> Result<Tensor> {
     let (bh, t, hd) = match x.shape().dims() {
         [bh, t, hd] => (*bh, *t, *hd),
@@ -685,8 +623,36 @@ pub fn merge_heads_batched(x: &Tensor, batch: usize) -> Result<Tensor> {
     Ok(f32_tensor(storage, shape))
 }
 
-/// The backward and optimizer ops. Behind `train`: a caller doing inference
-/// dispatches none of them, and this is the whole reason the feature exists.
+pub fn split_heads_single(x: &Tensor, h: usize, batch: usize) -> Result<Tensor> {
+    let (bt, c) = match x.shape().dims() {
+        [bt, c] => (*bt, *c),
+        _ => {
+            return Err(ForgeError::Shape(
+                "split_heads_single needs [b*t, c]".into(),
+            ));
+        }
+    };
+    if c % h != 0 {
+        return Err(ForgeError::Shape(format!(
+            "split_heads_single c={c} % h={h}"
+        )));
+    }
+    if batch == 0 || bt % batch != 0 {
+        return Err(ForgeError::Shape(format!(
+            "split_heads_single: {bt} rows not divisible into {batch} sequences"
+        )));
+    }
+    let t = bt / batch;
+    let shape = Shape::new(&[batch * h, t, c / h]);
+    let storage = match x.storage() {
+        Storage::Cpu(_) => Storage::Cpu(CpuStorage::F32(
+            cpu::unmerge_heads(cpu_f32(x)?, batch, t, c, h).into(),
+        )),
+        Storage::Wgpu(_) => Storage::Wgpu(gpu::ops::unmerge_heads(gpu_storage(x)?, batch, t, c, h)),
+    };
+    Ok(f32_tensor(storage, shape))
+}
+
 #[cfg(feature = "train")]
 #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
 mod train;

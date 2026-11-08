@@ -1,6 +1,3 @@
-//! GPT-2 model assembly and generation.
-
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -8,6 +5,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::Deserialize;
 
+use super::{Weights, argmax};
 #[cfg(feature = "train")]
 use crate::autograd::{TVar, Tape};
 use crate::device::Device;
@@ -16,6 +14,8 @@ use crate::nn::{Embedding, LayerNorm, Linear};
 use crate::ops::{self, MatmulSpec};
 use crate::tensor::Tensor;
 use crate::tokenizer::Tokenizer;
+
+pub const ARCHITECTURE: &str = "gpt2";
 
 fn default_eps() -> f32 {
     1e-5
@@ -32,7 +32,6 @@ pub struct Gpt2Config {
     pub eos_token_id: Option<u32>,
 }
 
-/// HF config.json may carry `n_ctx`, `n_positions`, or both.
 #[derive(Deserialize)]
 struct RawConfig {
     n_layer: usize,
@@ -50,7 +49,6 @@ struct RawConfig {
 }
 
 impl Gpt2Config {
-    /// GPT-2 small (124M).
     pub fn gpt2() -> Self {
         Gpt2Config {
             n_layer: 12,
@@ -68,8 +66,6 @@ impl Gpt2Config {
         Self::from_json_str(&text)
     }
 
-    /// Parse an HF `config.json` string — the primary form; on wasm the
-    /// string arrives from an HTTP fetch.
     pub fn from_json_str(text: &str) -> Result<Self> {
         let raw: RawConfig = serde_json::from_str(text)?;
         let n_ctx = raw.n_ctx.or(raw.n_positions).ok_or_else(|| {
@@ -113,88 +109,44 @@ pub enum Sampling {
     },
 }
 
-/// One block's attention probabilities for one decode step, read back from
-/// the device.
-///
-/// `probs` is the row-major `[n_head, q_len, kv_len]` tensor the model
-/// actually attended with — captured after the softmax, not recomputed — so a
-/// visualization built from it shows the same arithmetic that produced the
-/// text. `ops::softmax` is out-of-place, so capturing it perturbs nothing.
 #[derive(Debug, Clone)]
 pub struct AttnStep {
     pub layer: usize,
     pub n_head: usize,
-    /// Query positions in this step: the whole prompt on prefill, 1 per decode.
     pub q_len: usize,
-    /// Past positions attended to, including the queries themselves.
     pub kv_len: usize,
     pub probs: Vec<f32>,
 }
 
-/// One block's Q/K/V, MLP and output tensors for one step, read back from the
-/// device. Captured only for the first `detail_layers` blocks — the expensive
-/// kinds — while [`AttnStep`] is captured for every block.
-///
-/// `q`/`k`/`v` are the tensors for the *new* positions only (`[n_head, q_len,
-/// head_dim]`), which is what the step computed: the older keys and values
-/// live in the cache and were never recomputed.
 #[derive(Debug, Clone)]
 pub struct LayerDetail {
     pub layer: usize,
-    /// `[q_len, n_embd]`, the block's first LayerNorm.
     pub ln1_out: Vec<f32>,
-    /// `[n_head, q_len, head_dim]`
     pub q: Vec<f32>,
     pub k: Vec<f32>,
     pub v: Vec<f32>,
-    /// `[n_head, q_len, kv_len]` — `q · kᵢ / √head_dim` *before* the causal
-    /// mask and the softmax. The masked triangle only means something next to
-    /// the full rectangle it was cut from.
     pub scores: Vec<f32>,
-    /// `[q_len, n_embd]` — the heads concatenated, before the output
-    /// projection. Kept separate from `attn_proj_out` because this is the one
-    /// place `n_head × head_dim` becomes `n_embd`.
     pub attn_head_out: Vec<f32>,
-    /// `[q_len, n_embd]`, after the attention output projection.
     pub attn_proj_out: Vec<f32>,
-    /// `[q_len, n_embd]`, after the first residual add.
     pub resid_attn: Vec<f32>,
-    /// `[q_len, n_embd]`, the block's second LayerNorm.
     pub ln2_out: Vec<f32>,
-    /// `[q_len, 4 * n_embd]`, post-GELU.
     pub mlp_hidden: Vec<f32>,
-    /// `[q_len, n_embd]`, after the second residual add.
     pub block_out: Vec<f32>,
 }
 
-/// Everything one decode step computed, read back in a single batched round
-/// trip. A strict superset of [`AttnStep`]: `attn` is exactly what
-/// [`Gpt2::logits_step_attn_async`] reports for the same step.
 #[derive(Debug, Clone)]
 pub struct StepTrace {
-    /// Query positions in this step: the whole prompt on prefill, 1 per decode.
     pub q_len: usize,
-    /// Past positions attended to, including the queries themselves.
     pub kv_len: usize,
     pub n_head: usize,
     pub n_embd: usize,
-    /// `[q_len, n_embd]` — token + position embedding, before block 0.
-    /// Empty when `detail_layers` is 0.
     pub embedding: Vec<f32>,
-    /// Every block, in layer order.
     pub attn: Vec<AttnStep>,
-    /// The first `detail_layers` blocks, in layer order.
     pub detail: Vec<LayerDetail>,
-    /// `[q_len, n_embd]` — after the final LayerNorm, i.e. what the LM head
-    /// multiplies. Empty when `detail_layers` is 0.
     pub ln_f_out: Vec<f32>,
-    /// Top-n `(token id, probability)`, most likely first. Empty when `top_n`
-    /// is 0.
     pub top: Vec<(u32, f32)>,
 }
 
-/// What a captured tensor is, so the batched readback can be interpreted
-/// without guessing from rank.
 #[derive(Debug, Clone, Copy)]
 enum ProbeKind {
     Embedding,
@@ -213,12 +165,6 @@ enum ProbeKind {
     LnFOut,
 }
 
-/// Capture request + accumulator, threaded through the forward pass.
-///
-/// Every `push` is an `Arc` clone of a tensor the step computes anyway, so the
-/// probing and non-probing paths run identical arithmetic. `detail_layers`
-/// bounds the expensive kinds; `Attention` is captured for every layer
-/// regardless, because the folded block stack still needs it.
 struct Probe {
     detail_layers: usize,
     kinds: Vec<ProbeKind>,
@@ -244,8 +190,6 @@ impl Probe {
     }
 }
 
-/// Preallocated per-layer K/V tensors (`[n_head, n_ctx, head_dim]`) for
-/// incremental decode. `len` positions are filled; new tokens append.
 pub struct KvCache {
     k: Vec<Tensor>,
     v: Vec<Tensor>,
@@ -263,10 +207,6 @@ impl KvCache {
 }
 
 impl Gpt2 {
-    /// Load a checkpoint of either format from disk, by content and not by
-    /// extension — see [`Gpt2::from_checkpoint_bytes`]. Pair it with
-    /// [`crate::serialization::checkpoint_in_dir`] to load a model directory
-    /// without caring which format it ships.
     pub fn from_checkpoint(
         path: impl AsRef<Path>,
         config: Gpt2Config,
@@ -276,212 +216,77 @@ impl Gpt2 {
         Self::from_checkpoint_bytes(&bytes, config, device)
     }
 
-    /// Load a checkpoint of either format, chosen by sniffing the leading
-    /// magic bytes: `.fzm`'s `"FZM1"` header, otherwise `.safetensors`. This
-    /// is what the wasm bindings use, so a page can fetch either extension
-    /// without the JS side knowing which codec is behind it.
     pub fn from_checkpoint_bytes(
         bytes: &[u8],
         config: Gpt2Config,
         device: &Device,
     ) -> Result<Self> {
-        if bytes.starts_with(b"FZM1") {
-            Self::from_fzm_bytes(bytes, config, device)
-        } else {
-            Self::from_safetensors_bytes(bytes, config, device)
+        let (mut w, _) = Weights::parse(bytes, ARCHITECTURE)?;
+        let eps = config.layer_norm_epsilon;
+        let wpe = w.param("wpe.weight", None, device)?;
+        let emb = w.embedding("wte.weight", config.vocab_size, config.n_embd, wpe, device)?;
+        let ln = |w: &mut Weights<'_>, name: &str| -> Result<LayerNorm> {
+            Ok(LayerNorm {
+                gamma: w.param(&format!("{name}.weight"), None, device)?,
+                beta: w.param(&format!("{name}.bias"), None, device)?,
+                eps,
+            })
+        };
+        let linear = |w: &mut Weights<'_>, name: &str| -> Result<Linear> {
+            Ok(Linear {
+                w: w.weight(&format!("{name}.weight"), None, device)?,
+                b: Some(w.param(&format!("{name}.bias"), None, device)?),
+            })
+        };
+        let mut blocks = Vec::with_capacity(config.n_layer);
+        for i in 0..config.n_layer {
+            blocks.push(Block {
+                ln_1: ln(&mut w, &format!("h.{i}.ln_1"))?,
+                attn_qkv: linear(&mut w, &format!("h.{i}.attn.c_attn"))?,
+                attn_proj: linear(&mut w, &format!("h.{i}.attn.c_proj"))?,
+                ln_2: ln(&mut w, &format!("h.{i}.ln_2"))?,
+                mlp_fc: linear(&mut w, &format!("h.{i}.mlp.c_fc"))?,
+                mlp_proj: linear(&mut w, &format!("h.{i}.mlp.c_proj"))?,
+            });
         }
+        let ln_f = ln(&mut w, "ln_f")?;
+        Ok(Gpt2 {
+            emb,
+            blocks,
+            ln_f,
+            config,
+        })
     }
 
-    /// Load HF GPT-2 weights. `path` is the .safetensors file. Weight names
-    /// may or may not carry the "transformer." prefix; both are accepted.
-    /// The LM head is tied to `wte` (the checkpoint has no separate tensor).
     pub fn from_safetensors(
         path: impl AsRef<Path>,
         config: Gpt2Config,
         device: &Device,
     ) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref())?;
-        Self::from_safetensors_bytes(&bytes, config, device)
+        Self::from_checkpoint(path, config, device)
     }
 
-    /// Load HF GPT-2 weights from in-memory .safetensors bytes — the primary
-    /// form; on wasm the bytes arrive from an HTTP fetch. `wte` never touches
-    /// the device un-chunked: it is uploaded row-chunked straight from the
-    /// file buffer.
     pub fn from_safetensors_bytes(
         bytes: &[u8],
         config: Gpt2Config,
         device: &Device,
     ) -> Result<Self> {
-        let st = safetensors::SafeTensors::deserialize(bytes)
-            .map_err(|e| ForgeError::SafeTensors(format!("deserialize: {e}")))?;
-        let view = |name: &str| -> Result<safetensors::tensor::TensorView<'_>> {
-            st.tensor(name)
-                .or_else(|_| st.tensor(&format!("transformer.{name}")))
-                .map_err(|_| ForgeError::SafeTensors(format!("missing tensor {name}")))
-        };
-        let host = |name: &str| -> Result<(Vec<usize>, Vec<f32>)> {
-            let v = view(name)?;
-            if v.dtype() != safetensors::tensor::Dtype::F32 {
-                return Err(ForgeError::SafeTensors(format!(
-                    "{name}: expected f32, got {:?}",
-                    v.dtype()
-                )));
-            }
-            Ok((v.shape().to_vec(), bytemuck::pod_collect_to_vec(v.data())))
-        };
-        let take = |name: &str| -> Result<Tensor> {
-            let (shape, data) = host(name)?;
-            Tensor::from_f32(&data, shape, device)
-        };
-        let eps = config.layer_norm_epsilon;
-        // wte (~147 MiB for GPT-2) can exceed a single GPU binding, so it
-        // goes host buffer -> row-chunked device tensors directly.
-        let (_, wte_host) = host("wte.weight")?;
-        let emb = Embedding::from_host_wte(
-            &wte_host,
-            config.vocab_size,
-            config.n_embd,
-            take("wpe.weight")?,
-            device,
-        )?;
-        drop(wte_host);
-        let mut blocks = Vec::with_capacity(config.n_layer);
-        for i in 0..config.n_layer {
-            blocks.push(Block {
-                ln_1: LayerNorm {
-                    gamma: take(&format!("h.{i}.ln_1.weight"))?,
-                    beta: take(&format!("h.{i}.ln_1.bias"))?,
-                    eps,
-                },
-                attn_qkv: Linear {
-                    w: take(&format!("h.{i}.attn.c_attn.weight"))?,
-                    b: Some(take(&format!("h.{i}.attn.c_attn.bias"))?),
-                },
-                attn_proj: Linear {
-                    w: take(&format!("h.{i}.attn.c_proj.weight"))?,
-                    b: Some(take(&format!("h.{i}.attn.c_proj.bias"))?),
-                },
-                ln_2: LayerNorm {
-                    gamma: take(&format!("h.{i}.ln_2.weight"))?,
-                    beta: take(&format!("h.{i}.ln_2.bias"))?,
-                    eps,
-                },
-                mlp_fc: Linear {
-                    w: take(&format!("h.{i}.mlp.c_fc.weight"))?,
-                    b: Some(take(&format!("h.{i}.mlp.c_fc.bias"))?),
-                },
-                mlp_proj: Linear {
-                    w: take(&format!("h.{i}.mlp.c_proj.weight"))?,
-                    b: Some(take(&format!("h.{i}.mlp.c_proj.bias"))?),
-                },
-            });
-        }
-        let ln_f = LayerNorm {
-            gamma: take("ln_f.weight")?,
-            beta: take("ln_f.bias")?,
-            eps,
-        };
-        Ok(Gpt2 {
-            emb,
-            blocks,
-            ln_f,
-            config,
-        })
+        Self::from_checkpoint_bytes(bytes, config, device)
     }
 
-    /// Load a `.fzm` q4 checkpoint. `path` is the `.fzm` file.
     pub fn from_fzm(path: impl AsRef<Path>, config: Gpt2Config, device: &Device) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref())?;
-        Self::from_fzm_bytes(&bytes, config, device)
+        Self::from_checkpoint(path, config, device)
     }
 
-    /// Load a `.fzm` q4 checkpoint from in-memory bytes. Every tensor is
-    /// dequantized to f32 host-side on parse (see
-    /// [`crate::serialization::fzm`]), then follows the exact same
-    /// host-\>device upload path as [`Gpt2::from_safetensors_bytes`] — there
-    /// is no packed GPU-side q4 kernel yet.
     pub fn from_fzm_bytes(bytes: &[u8], config: Gpt2Config, device: &Device) -> Result<Self> {
-        let mut map: HashMap<String, (Vec<usize>, Vec<f32>)> =
-            crate::serialization::fzm::load_fzm_q4(bytes)?
-                .into_iter()
-                .map(|(name, shape, data)| (name, (shape, data)))
-                .collect();
-        fn host(
-            map: &mut HashMap<String, (Vec<usize>, Vec<f32>)>,
-            name: &str,
-        ) -> Result<(Vec<usize>, Vec<f32>)> {
-            map.remove(name)
-                .or_else(|| map.remove(&format!("transformer.{name}")))
-                .ok_or_else(|| ForgeError::Fzm(format!("missing tensor {name}")))
-        }
-        fn take(
-            map: &mut HashMap<String, (Vec<usize>, Vec<f32>)>,
-            name: &str,
-            device: &Device,
-        ) -> Result<Tensor> {
-            let (shape, data) = host(map, name)?;
-            Tensor::from_f32(&data, shape, device)
-        }
-        let eps = config.layer_norm_epsilon;
-        let (_, wte_host) = host(&mut map, "wte.weight")?;
-        let emb = Embedding::from_host_wte(
-            &wte_host,
-            config.vocab_size,
-            config.n_embd,
-            take(&mut map, "wpe.weight", device)?,
-            device,
-        )?;
-        drop(wte_host);
-        let mut blocks = Vec::with_capacity(config.n_layer);
-        for i in 0..config.n_layer {
-            blocks.push(Block {
-                ln_1: LayerNorm {
-                    gamma: take(&mut map, &format!("h.{i}.ln_1.weight"), device)?,
-                    beta: take(&mut map, &format!("h.{i}.ln_1.bias"), device)?,
-                    eps,
-                },
-                attn_qkv: Linear {
-                    w: take(&mut map, &format!("h.{i}.attn.c_attn.weight"), device)?,
-                    b: Some(take(&mut map, &format!("h.{i}.attn.c_attn.bias"), device)?),
-                },
-                attn_proj: Linear {
-                    w: take(&mut map, &format!("h.{i}.attn.c_proj.weight"), device)?,
-                    b: Some(take(&mut map, &format!("h.{i}.attn.c_proj.bias"), device)?),
-                },
-                ln_2: LayerNorm {
-                    gamma: take(&mut map, &format!("h.{i}.ln_2.weight"), device)?,
-                    beta: take(&mut map, &format!("h.{i}.ln_2.bias"), device)?,
-                    eps,
-                },
-                mlp_fc: Linear {
-                    w: take(&mut map, &format!("h.{i}.mlp.c_fc.weight"), device)?,
-                    b: Some(take(&mut map, &format!("h.{i}.mlp.c_fc.bias"), device)?),
-                },
-                mlp_proj: Linear {
-                    w: take(&mut map, &format!("h.{i}.mlp.c_proj.weight"), device)?,
-                    b: Some(take(&mut map, &format!("h.{i}.mlp.c_proj.bias"), device)?),
-                },
-            });
-        }
-        let ln_f = LayerNorm {
-            gamma: take(&mut map, "ln_f.weight", device)?,
-            beta: take(&mut map, "ln_f.bias", device)?,
-            eps,
-        };
-        Ok(Gpt2 {
-            emb,
-            blocks,
-            ln_f,
-            config,
-        })
+        Self::from_checkpoint_bytes(bytes, config, device)
     }
 
     fn attention(&self, block: &Block, h: &Tensor) -> Result<Tensor> {
         let n_head = self.config.n_head;
         let hd = self.config.n_embd / n_head;
-        let qkv = block.attn_qkv.forward(h)?; // [t, 3c]
-        let (q, k, v) = ops::split_heads(&qkv, n_head)?; // [h, t, hd] each
+        let qkv = block.attn_qkv.forward(h)?;
+        let (q, k, v) = ops::split_heads(&qkv, n_head)?;
         let att = ops::matmul(
             &q,
             &k,
@@ -491,22 +296,14 @@ impl Gpt2 {
                 alpha: 1.0 / (hd as f32).sqrt(),
                 ..Default::default()
             },
-        )?; // [h, t, t]
+        )?;
         let att = ops::softmax(&att, true, 0)?;
-        let y = ops::matmul(&att, &v, None, MatmulSpec::default())?; // [h, t, hd]
-        let y = ops::merge_heads(&y)?; // [t, c]
+        let y = ops::matmul(&att, &v, None, MatmulSpec::default())?;
+        let y = ops::merge_heads(&y)?;
         block.attn_proj.forward(&y)
     }
 
-    /// Attention over new tokens only, appending their K/V to the cache and
-    /// attending to all `len + t` cached positions.
-    ///
-    /// `probe`, when present, collects the post-softmax probabilities — and,
-    /// for a detail layer, Q/K/V as well. Every capture is an `Arc` handle to
-    /// a tensor that is computed regardless, so the probing and non-probing
-    /// paths run identical arithmetic.
-    #[allow(clippy::too_many_arguments)] // the cache slots and the probe are
-    // all per-call state; bundling them would only move the argument list.
+    #[allow(clippy::too_many_arguments)]
     fn attention_cached(
         &self,
         layer: usize,
@@ -519,8 +316,8 @@ impl Gpt2 {
     ) -> Result<Tensor> {
         let n_head = self.config.n_head;
         let hd = self.config.n_embd / n_head;
-        let qkv = block.attn_qkv.forward(h)?; // [t, 3c]
-        let (q, k, v) = ops::split_heads(&qkv, n_head)?; // [h, t, hd]
+        let qkv = block.attn_qkv.forward(h)?;
+        let (q, k, v) = ops::split_heads(&qkv, n_head)?;
         if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
             p.push(ProbeKind::Query { layer }, &q);
             p.push(ProbeKind::Key { layer }, &k);
@@ -540,14 +337,11 @@ impl Gpt2 {
                 b_rows: Some(kv_len),
                 ..Default::default()
             },
-        )?; // [h, t, kv_len]
-        // The raw dot products, before the mask and the softmax: the causal
-        // triangle the next capture holds is only legible beside the full
-        // rectangle it was cut from.
+        )?;
         if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
             p.push(ProbeKind::Scores { layer }, &scores);
         }
-        let att = ops::softmax(&scores, true, len)?; // off = kv_len - t
+        let att = ops::softmax(&scores, true, len)?;
         if let Some(p) = probe.as_deref_mut() {
             p.push(ProbeKind::Attention { layer }, &att);
         }
@@ -559,11 +353,8 @@ impl Gpt2 {
                 b_rows: Some(kv_len),
                 ..Default::default()
             },
-        )?; // [h, t, hd]
+        )?;
         let y = ops::merge_heads(&y)?;
-        // Concatenation and projection are two stages of the picture, and
-        // returning only the projected tensor hides the one place
-        // `n_head × head_dim` becomes `n_embd`.
         if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
             p.push(ProbeKind::AttnHeadOut { layer }, &y);
         }
@@ -574,7 +365,6 @@ impl Gpt2 {
         Ok(proj)
     }
 
-    /// Hidden states after the final LayerNorm: [t, n_embd].
     fn hidden(&self, ids: &[u32]) -> Result<Tensor> {
         if ids.is_empty() {
             return Err(ForgeError::Shape("empty token sequence".into()));
@@ -587,7 +377,6 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
-        // One command buffer for the whole pass instead of one per kernel.
         let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, 0)?;
@@ -603,10 +392,6 @@ impl Gpt2 {
         self.ln_f.forward(&x)
     }
 
-    /// Hidden states for `ids` (new tokens) continuing from `cache`;
-    /// appends their K/V and advances `cache.len`. `probe` is threaded through
-    /// to [`Gpt2::attention_cached`] and collects the embedding, every block's
-    /// attention, and the detail layers' Q/K/V, MLP and block outputs.
     fn hidden_cached(
         &self,
         ids: &[u32],
@@ -626,14 +411,9 @@ impl Gpt2 {
             )));
         }
         let device = self.emb.wpe.device();
-        // As in `hidden`: one submit for the step, not one per kernel. The
-        // probe paths read tensors back mid-pass, which flushes and reopens —
-        // correct, and the reason drawing the attention costs what it does.
         let _scope = device.dispatch_scope();
         let ids_t = Tensor::from_u32(ids, [ids.len()], &device)?;
         let mut x = self.emb.forward(&ids_t, pos)?;
-        // The embedding is only worth a round trip when the detail stages are
-        // being drawn; `detail_layers == 0` is the cheap attention-only probe.
         if let Some(p) = probe.as_deref_mut().filter(|p| p.detail_layers > 0) {
             p.push(ProbeKind::Embedding, &x);
         }
@@ -643,8 +423,6 @@ impl Gpt2 {
             .zip(cache.k.iter_mut().zip(cache.v.iter_mut()))
             .enumerate()
         {
-            // Bound rather than passed inline so it can be captured: the
-            // walkthrough draws a LayerNorm as its own stage.
             let ln1 = block.ln_1.forward(&x)?;
             if let Some(p) = probe.as_deref_mut().filter(|p| p.detail(layer)) {
                 p.push(ProbeKind::Ln1Out { layer }, &ln1);
@@ -677,7 +455,6 @@ impl Gpt2 {
         Ok(out)
     }
 
-    /// Empty KV cache sized for this model's full context.
     pub fn new_cache(&self) -> Result<KvCache> {
         let device = self.emb.wpe.device();
         let hd = self.config.n_embd / self.config.n_head;
@@ -691,40 +468,27 @@ impl Gpt2 {
         Ok(KvCache { k, v, len: 0 })
     }
 
-    /// Full logits [t, vocab] — used by verification tests.
-    /// The LM head is wte-tied: logits = h @ wte^T.
     pub fn forward(&self, ids: &[u32]) -> Result<Tensor> {
-        // Nests inside `hidden`'s scope so the wte-tied head joins the same
-        // command buffer: one submit for the whole step.
         let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         ops::matmul_chunked_transb(&h, &self.emb.wte_chunks, 1.0)
     }
 
-    /// Logits for the last position only, recomputing the full context
-    /// (no cache) — the reference decode path used by verification tests.
     pub fn logits_last(&self, ids: &[u32]) -> Result<Vec<f32>> {
-        // As in `forward`: the head joins the body's command buffer.
         let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden(ids)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
     }
 
-    /// Last-position logits for `ids` continuing from `cache` (incremental
-    /// decode: pass the full prompt once, then one token at a time).
     pub fn logits_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
-        // As in `forward`: the head joins the body's command buffer.
         let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
         ops::matmul_chunked_transb(&last, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
     }
 
-    /// Async form of [`Gpt2::logits_step`] — identical math; the readback is
-    /// awaited so it works on wasm32.
     pub async fn logits_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
-        // As in `forward`: the head joins the body's command buffer.
         let _scope = self.emb.wpe.device().dispatch_scope();
         let h = self.hidden_cached(ids, cache, None)?;
         let last = h.narrow_rows(ids.len() - 1, 1)?;
@@ -733,43 +497,26 @@ impl Gpt2 {
             .await
     }
 
-    /// The last position's hidden state **after the final LayerNorm** —
-    /// `[n_embd]`, exactly the vector [`Gpt2::logits_step`] hands to the head.
-    ///
-    /// This is the only stage at which two models' activations can be merged
-    /// and still decode: it is what `wte^T` multiplies, so models that share a
-    /// (frozen) `wte` share a basis here and nowhere else. Anything deeper —
-    /// per-head Q/K/V, the post-GELU MLP hidden — is private to one model.
     pub fn hidden_step(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
         let h = self.hidden_cached(ids, cache, None)?;
         h.narrow_rows(ids.len() - 1, 1)?.to_vec_f32()
     }
 
-    /// Async form of [`Gpt2::hidden_step`] — identical math, awaited readback
-    /// so it works on wasm32.
     pub async fn hidden_step_async(&self, ids: &[u32], cache: &mut KvCache) -> Result<Vec<f32>> {
         let h = self.hidden_cached(ids, cache, None)?;
         h.narrow_rows(ids.len() - 1, 1)?.to_vec_f32_async().await
     }
 
-    /// Logits for a hidden state supplied from outside: `h @ wte^T`, the same
-    /// wte-tied head every other decode path applies. Lets a vector this model
-    /// did not produce — a merge of several models' [`Gpt2::hidden_step`]
-    /// outputs, say — be decoded to a distribution over the vocabulary.
     pub fn logits_from_hidden(&self, h: &[f32]) -> Result<Vec<f32>> {
         ops::matmul_chunked_transb(&self.hidden_tensor(h)?, &self.emb.wte_chunks, 1.0)?.to_vec_f32()
     }
 
-    /// Async form of [`Gpt2::logits_from_hidden`].
     pub async fn logits_from_hidden_async(&self, h: &[f32]) -> Result<Vec<f32>> {
         ops::matmul_chunked_transb(&self.hidden_tensor(h)?, &self.emb.wte_chunks, 1.0)?
             .to_vec_f32_async()
             .await
     }
 
-    /// The token embedding table as host floats, chunks reassembled. Exists so
-    /// a council can verify its experts really do share one `wte` — the
-    /// invariant that makes merging their hidden states mean anything.
     pub fn wte_host(&self) -> Result<Vec<f32>> {
         let mut out = Vec::with_capacity(self.config.vocab_size * self.config.n_embd);
         for chunk in &self.emb.wte_chunks {
@@ -789,12 +536,6 @@ impl Gpt2 {
         Tensor::from_f32(h, [1, self.config.n_embd], &self.emb.wpe.device())
     }
 
-    /// [`Gpt2::logits_step_async`] plus every block's attention probabilities
-    /// for this step, in layer order.
-    ///
-    /// The cheap probe: exactly [`Gpt2::logits_step_trace_async`] with no
-    /// detail layers and no top-n, so the two can never disagree about what
-    /// the model attended with.
     pub async fn logits_step_attn_async(
         &self,
         ids: &[u32],
@@ -804,23 +545,6 @@ impl Gpt2 {
         Ok((logits, trace.attn))
     }
 
-    /// [`Gpt2::logits_step_async`] plus a full calculation trace for this step:
-    /// the embedding, every block's attention, the whole forward pass through
-    /// the first `detail_layers` blocks (both LayerNorms, Q/K/V, pre-softmax
-    /// scores, the concatenated heads and their projection, both residual
-    /// adds, post-GELU MLP), the final LayerNorm, and the `top_n` most likely
-    /// next tokens with their probabilities.
-    ///
-    /// The logits are identical to `logits_step_async` — the probe only reads
-    /// tensors the step computes anyway. The whole step is enqueued first, and
-    /// every captured tensor comes back in a *single* batched readback: one at
-    /// a time they cost ~2.7x the decode itself, since the price is the round
-    /// trip rather than the bytes.
-    ///
-    /// `detail_layers` is the cost knob. At 0 this is the attention-only probe
-    /// and nothing but the post-softmax tensors is read. Each detail layer adds
-    /// `q_len * (13 * n_embd + n_head * kv_len)` floats, so a long prefill is
-    /// the only expensive call — a decode step is `q_len == 1`.
     pub async fn logits_step_trace_async(
         &self,
         ids: &[u32],
@@ -838,8 +562,6 @@ impl Gpt2 {
             mut tensors,
             detail_layers,
         } = probe;
-        // Logits last, so the kinds stay aligned with the tensors that
-        // produced them and the shapes below line up.
         let shapes: Vec<Vec<usize>> = tensors.iter().map(|t| t.shape().dims().to_vec()).collect();
         tensors.push(ops::matmul_chunked_transb(
             &last,
@@ -910,31 +632,12 @@ impl Gpt2 {
         Ok((logits, trace))
     }
 
-    // ---- construction, parameters, serialization ----
-    //
-    // Motivated by training but not gated behind it: `init_random` builds a
-    // model, `params`/`param_specs` name its tensors and `save_safetensors`
-    // writes them. None records a tape, and `tests/streaming.rs` and
-    // `tests/council.rs` — both pure inference — call `init_random`. Only
-    // `loss` and `loss_grads` below are `#[cfg(feature = "train")]`.
-
-    /// Random initialization for training from scratch: N(0, 0.02) weights,
-    /// residual projections scaled by 1/sqrt(2*n_layer), zero biases,
-    /// identity LayerNorms.
     pub fn init_random(config: Gpt2Config, device: &Device, seed: u64) -> Result<Gpt2> {
         let mut rng = StdRng::seed_from_u64(seed);
         let c = config.n_embd;
         let std = 0.02f32;
         let resid_std = std / (2.0 * config.n_layer as f32).sqrt();
-        let mut normal = |n: usize, std: f32| -> Vec<f32> {
-            (0..n)
-                .map(|_| {
-                    let u1: f32 = rng.random::<f32>().max(1e-7);
-                    let u2: f32 = rng.random::<f32>();
-                    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos() * std
-                })
-                .collect()
-        };
+        let mut normal = |n: usize, std: f32| super::normal(&mut rng, n, std);
         let wte_host = normal(config.vocab_size * c, std);
         let wpe = Tensor::from_f32(&normal(config.n_ctx * c, std), [config.n_ctx, c], device)?;
         let emb = Embedding::from_host_wte(&wte_host, config.vocab_size, c, wpe, device)?;
@@ -986,8 +689,6 @@ impl Gpt2 {
         })
     }
 
-    /// Parameter names (safetensors keys) and weight-decay flags, in the
-    /// canonical order used by `params`, `params_mut`, and `loss_grads`.
     pub fn param_specs(&self) -> Vec<(String, bool)> {
         let mut out = vec![
             ("wte.weight".to_string(), true),
@@ -1012,7 +713,6 @@ impl Gpt2 {
         out
     }
 
-    /// The single-chunk token embedding table, required for training.
     fn wte_single(&self) -> Result<&Tensor> {
         if self.emb.wte_chunks.len() != 1 {
             return Err(ForgeError::Shape(format!(
@@ -1024,7 +724,6 @@ impl Gpt2 {
         Ok(&self.emb.wte_chunks[0])
     }
 
-    /// Parameters in `param_specs` order.
     pub fn params(&self) -> Result<Vec<&Tensor>> {
         let mut out = vec![self.wte_single()?, &self.emb.wpe];
         for b in &self.blocks {
@@ -1041,7 +740,6 @@ impl Gpt2 {
         Ok(out)
     }
 
-    /// Mutable parameters in `param_specs` order (for the optimizer).
     pub fn params_mut(&mut self) -> Result<Vec<&mut Tensor>> {
         if self.emb.wte_chunks.len() != 1 {
             return Err(ForgeError::Shape(
@@ -1090,22 +788,26 @@ impl Gpt2 {
         Ok(out)
     }
 
-    /// Save a checkpoint loadable by `from_safetensors`. A chunked wte is
-    /// reassembled host-side first.
     pub fn save_safetensors(&self, path: impl AsRef<Path>) -> Result<()> {
         crate::serialization::save_safetensors(path, &self.save_entries()?)
     }
 
-    /// Save a checkpoint loadable by `from_fzm`, quantized to `.fzm` q4. A
-    /// chunked wte is reassembled host-side first, same as `save_safetensors`.
     pub fn save_fzm(&self, path: impl AsRef<Path>) -> Result<()> {
-        crate::serialization::fzm::save_fzm_q4(path, &self.save_entries()?)
+        use crate::serialization::fzm::{FzmDtype, FzmManifest, save_fzm_v2};
+        let c = &self.config;
+        let config = serde_json::json!({
+            "n_layer": c.n_layer,
+            "n_head": c.n_head,
+            "n_embd": c.n_embd,
+            "n_ctx": c.n_ctx,
+            "vocab_size": c.vocab_size,
+            "layer_norm_epsilon": c.layer_norm_epsilon,
+            "eos_token_id": c.eos_token_id,
+        });
+        let manifest = FzmManifest::new(ARCHITECTURE, config);
+        save_fzm_v2(path, &manifest, &self.save_entries()?, FzmDtype::Q4, &[])
     }
 
-    /// Save in whichever format `path`'s extension names — `.fzm` q4, else
-    /// safetensors. The write-side counterpart of [`Gpt2::from_checkpoint`],
-    /// so a caller carrying a checkpoint path around (the trainer's
-    /// `--checkpoint`) cannot write one format under the other's name.
     pub fn save_checkpoint(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         if path.extension().and_then(|s| s.to_str()) == Some("fzm") {
@@ -1115,8 +817,6 @@ impl Gpt2 {
         }
     }
 
-    /// `(name, shape, host f32)` for every parameter, in `param_specs` order.
-    /// Both savers want exactly this; the only difference is the codec.
     fn save_entries(&self) -> Result<crate::serialization::fzm::TensorEntries> {
         let c = self.config.n_embd;
         let mut wte_host = Vec::with_capacity(self.config.vocab_size * c);
@@ -1136,8 +836,6 @@ impl Gpt2 {
         Ok(entries)
     }
 
-    /// Like `params` but tolerates a chunked wte (slot 0 is unused by the
-    /// caller, which reassembles wte itself).
     fn params_for_save(&self) -> Result<Vec<&Tensor>> {
         let mut out = vec![&self.emb.wte_chunks[0], &self.emb.wpe];
         for b in &self.blocks {
@@ -1156,10 +854,6 @@ impl Gpt2 {
 
     #[cfg(feature = "train")]
     #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
-    /// Mean cross-entropy of `targets` given `input`, forward only — no tape,
-    /// no gradients, no dropout. This is the evaluation path: a validation
-    /// split scored with [`Gpt2::loss_grads`] would build and discard a full
-    /// backward graph per window.
     pub fn loss(&self, input: &[u32], targets: &[u32]) -> Result<f32> {
         if input.is_empty() || input.len() != targets.len() {
             return Err(ForgeError::Shape(
@@ -1175,10 +869,6 @@ impl Gpt2 {
         Ok(nll.iter().sum::<f32>() / t as f32)
     }
 
-    /// One training forward + backward on a single sequence: mean
-    /// cross-entropy of `targets` given `input`, and gradients for every
-    /// parameter in `param_specs` order. A thin call to
-    /// [`Gpt2::loss_grads_batched`] with a batch of one.
     #[cfg(feature = "train")]
     #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     pub fn loss_grads(
@@ -1191,23 +881,6 @@ impl Gpt2 {
         self.loss_grads_batched(input, targets, input.len(), dropout_p, seed)
     }
 
-    /// [`Gpt2::loss_grads`] over a real batch: `input` and `targets` hold
-    /// `input.len() / seq_len` sequences of `seq_len` tokens, concatenated.
-    /// The loss is the mean over every token, and the gradients are what
-    /// running the sequences separately and averaging would have produced.
-    ///
-    /// This is the axis that makes a training step fast. Sequences are
-    /// independent, so gradient accumulation — a loop of single-sequence
-    /// passes, summed — is *arithmetically* the same thing, and that is how
-    /// forge did it. It is not the same thing on a GPU: it multiplies the
-    /// kernel launches by the batch size and leaves every matmul at m =
-    /// seq_len, which on an RTX A5000 is a third of the throughput the same
-    /// matmul reaches when the batch is folded into its rows.
-    ///
-    /// Folding is all this does. There is no rank-4 tensor anywhere below: the
-    /// position-wise layers see `batch * seq_len` rows and cannot tell the
-    /// difference, and attention's batch rides in the same leading axis its
-    /// heads already use. See [`ops::split_heads_batched`].
     #[cfg(feature = "train")]
     #[cfg_attr(docsrs, doc(cfg(feature = "train")))]
     pub fn loss_grads_batched(
@@ -1237,11 +910,6 @@ impl Gpt2 {
         }
         let batch = input.len() / seq_len;
         let device = self.emb.wpe.device();
-        // One scope for the whole micro-step, exactly as `forward` does for
-        // inference. Without it every kernel was its own `queue.submit` — 335
-        // of them per micro-step on the char model, and at ~50 µs of driver
-        // round trip each that was the entire step. The `nll` readback partway
-        // through flushes and the scope carries on; see `WgpuContext::scope`.
         let _scope = device.dispatch_scope();
         let t = input.len();
         let ids_t = Tensor::from_u32(input, [t], &device)?;
@@ -1251,7 +919,6 @@ impl Gpt2 {
         let hd = self.config.n_embd / n_head;
 
         let mut tape = Tape::new();
-        // Leaves in param_specs order (ids 0..n_params).
         let pvars: Vec<TVar> = self
             .params()?
             .into_iter()
@@ -1300,8 +967,6 @@ impl Gpt2 {
             x = tape.add(&x, &f)?;
         }
         let xf = tape.layernorm(&x, &pvars[n_params - 2], &pvars[n_params - 1], eps)?;
-        // Weight-tied LM head: wte gets gradient from here *and* from the
-        // embedding scatter.
         let logits = tape.matmul(
             &xf,
             &pvars[0],
@@ -1326,8 +991,6 @@ impl Gpt2 {
         Ok((loss, grads))
     }
 
-    /// Autoregressive generation with KV-cache decode.
-    /// Returns the full text (prompt + completion).
     pub fn generate(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1338,14 +1001,6 @@ impl Gpt2 {
         self.generate_streaming(tokenizer, prompt, max_new_tokens, sampling, |_, _| {})
     }
 
-    /// Sync streaming generation with KV-cache decode. `on_token` fires
-    /// exactly once per *generated* token (never for the prompt) with the
-    /// token id and the newly decodable text delta — which may be empty when
-    /// a multi-byte character spans several BPE tokens, since a partial UTF-8
-    /// sequence is held back until its trailing bytes arrive.
-    ///
-    /// This is the accurate throughput hook: callback invocations map 1:1 to
-    /// tokens, unlike [`Gpt2::generate_async`]'s text-delta callback.
     pub fn generate_streaming(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1360,10 +1015,6 @@ impl Gpt2 {
         })
     }
 
-    /// [`Gpt2::generate_streaming`] with an interruptible callback: returning
-    /// [`ControlFlow::Break`] stops after the current token and returns the
-    /// text generated so far. Long interactive runs need this — a callback
-    /// that cannot abort can only be "cancelled" once the whole run finishes.
     pub fn generate_streaming_ctl(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1381,9 +1032,7 @@ impl Gpt2 {
             Sampling::Greedy => None,
         };
         let mut cache = self.new_cache()?;
-        let mut logits = self.logits_step(&ids, &mut cache)?; // prompt prefill
-        // Same append-only byte stream as `generate_async`, but the delta is
-        // captured per token instead of being forwarded as it is produced.
+        let mut logits = self.logits_step(&ids, &mut cache)?;
         let mut bytes = tokenizer.decode_bytes(&ids);
         let mut sent = emit_valid_prefix(&bytes, 0, &mut |_: &str| {});
         for _ in 0..max_new_tokens {
@@ -1401,15 +1050,11 @@ impl Gpt2 {
             if ids.len() >= self.config.n_ctx {
                 break;
             }
-            logits = self.logits_step(&[next], &mut cache)?; // single-token decode
+            logits = self.logits_step(&[next], &mut cache)?;
         }
         Ok(tokenizer.decode(&ids))
     }
 
-    /// Async autoregressive generation with KV-cache decode — the browser
-    /// form of [`Gpt2::generate`]. `on_text` receives each newly decoded text
-    /// fragment (the delta of the full decode, so multi-byte characters that
-    /// span BPE tokens are never split) so a page can stream output.
     pub async fn generate_async(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1425,10 +1070,6 @@ impl Gpt2 {
         .await
     }
 
-    /// [`Gpt2::generate_async`] with an interruptible callback — the async
-    /// counterpart of [`Gpt2::generate_streaming_ctl`]. Returning
-    /// [`ControlFlow::Break`] stops after the current token, which is how a
-    /// page offers a working "stop" button.
     pub async fn generate_async_ctl(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1437,8 +1078,6 @@ impl Gpt2 {
         sampling: Sampling,
         on_text: impl FnMut(&str) -> ControlFlow<()>,
     ) -> Result<String> {
-        // `None` turns off the probe entirely: no capture, no readback, and
-        // the same `logits_step_async` this method has always called.
         self.generate_async_probe(
             tokenizer,
             prompt,
@@ -1450,14 +1089,6 @@ impl Gpt2 {
         .await
     }
 
-    /// [`Gpt2::generate_async_ctl`] with an optional attention probe:
-    /// `on_attn`, when present, fires once per decode step with every block's
-    /// attention probabilities — including the prompt prefill, whose `q_len`
-    /// is the prompt length rather than 1.
-    ///
-    /// Opt-in because it costs one readback per block per token. Passing
-    /// `None` is exactly the non-probing path; the generated text is identical
-    /// either way, since the probe reads tensors the step already computed.
     pub async fn generate_async_probe(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1467,8 +1098,6 @@ impl Gpt2 {
         on_text: impl FnMut(&str) -> ControlFlow<()>,
         on_attn: Option<impl FnMut(&[AttnStep])>,
     ) -> Result<String> {
-        // No detail layers and no top-n: the attention-only probe, which is
-        // what this signature has always promised.
         self.generate_async_trace(
             tokenizer,
             prompt,
@@ -1482,16 +1111,7 @@ impl Gpt2 {
         .await
     }
 
-    /// [`Gpt2::generate_async_probe`] with the full calculation trace:
-    /// `on_trace`, when present, fires once per step — including the prompt
-    /// prefill, whose `q_len` is the prompt length rather than 1 — with
-    /// everything [`Gpt2::logits_step_trace_async`] captured.
-    ///
-    /// `None` is byte-for-byte the non-probing path. With `Some`, the
-    /// generated text is still identical: the probe reads tensors the step
-    /// already computed and changes no arithmetic.
-    #[allow(clippy::too_many_arguments)] // sampling, two sinks and the two
-    // cost knobs; a builder here would be ceremony over a call made twice.
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_async_trace(
         &self,
         tokenizer: &impl Tokenizer,
@@ -1503,9 +1123,6 @@ impl Gpt2 {
         detail_layers: usize,
         top_n: usize,
     ) -> Result<String> {
-        // The streaming helper takes a plain sink, so the break request is
-        // captured here and checked once the delta has been forwarded. A Cell
-        // keeps the flag readable while the closure holds it.
         let stop = std::cell::Cell::new(false);
         let mut on_text = |s: &str| {
             if on_text(s).is_break() {
@@ -1523,10 +1140,7 @@ impl Gpt2 {
         let mut cache = self.new_cache()?;
         let mut logits = self
             .step_async(&ids, &mut cache, &mut on_trace, detail_layers, top_n)
-            .await?; // prompt prefill
-        // Stream over the raw byte-level decode (append-only per token),
-        // emitting only its valid-UTF-8 prefix: a multi-byte character split
-        // across BPE tokens is held back until its trailing bytes arrive.
+            .await?;
         let mut bytes = tokenizer.decode_bytes(&ids);
         let mut sent = emit_valid_prefix(&bytes, 0, &mut on_text);
         for _ in 0..max_new_tokens {
@@ -1545,12 +1159,11 @@ impl Gpt2 {
             }
             logits = self
                 .step_async(&[next], &mut cache, &mut on_trace, detail_layers, top_n)
-                .await?; // single-token decode
+                .await?;
         }
         Ok(tokenizer.decode(&ids))
     }
 
-    /// One decode step, forwarding the trace to `on_trace` when probing.
     async fn step_async(
         &self,
         ids: &[u32],
@@ -1572,10 +1185,6 @@ impl Gpt2 {
     }
 }
 
-/// Send `bytes[sent..]` to `on_text` up to the longest decodable prefix;
-/// returns the new high-water mark. Invalid sequences become U+FFFD (matching
-/// `from_utf8_lossy`); an *incomplete* trailing character is held back until
-/// its remaining bytes arrive.
 fn emit_valid_prefix(bytes: &[u8], mut sent: usize, on_text: &mut impl FnMut(&str)) -> usize {
     loop {
         match std::str::from_utf8(&bytes[sent..]) {
@@ -1592,12 +1201,10 @@ fn emit_valid_prefix(bytes: &[u8], mut sent: usize, on_text: &mut impl FnMut(&st
                     sent += valid;
                 }
                 match e.error_len() {
-                    // Invalid sequence: emit a replacement char and skip it.
                     Some(bad) => {
                         on_text("\u{FFFD}");
                         sent += bad;
                     }
-                    // Incomplete tail: wait for the next token's bytes.
                     None => return sent,
                 }
             }
@@ -1605,14 +1212,6 @@ fn emit_valid_prefix(bytes: &[u8], mut sent: usize, on_text: &mut impl FnMut(&st
     }
 }
 
-/// The `n` most likely next tokens and their probabilities, most likely first.
-///
-/// A full softmax over the row, so a bar labelled 0.21 means 21% of the model's
-/// probability mass — not 21% of whatever survived a top-k truncation. This is
-/// the model's own distribution, before any sampling temperature: the sampler
-/// picks from it, but the picture is of the model.
-///
-/// No GPU work: the logits were already read back for sampling.
 pub fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
     let n = n.min(logits.len());
     if n == 0 {
@@ -1620,8 +1219,6 @@ pub fn top_probs(logits: &[f32], n: usize) -> Vec<(u32, f32)> {
     }
     let by_logit = |a: &u32, b: &u32| logits[*b as usize].total_cmp(&logits[*a as usize]);
     let mut idx: Vec<u32> = (0..logits.len() as u32).collect();
-    // Partition first: `n` is ~24 and the vocabulary is up to 50257, so a full
-    // sort per token would be the most expensive thing in the trace.
     idx.select_nth_unstable_by(n - 1, by_logit);
     idx.truncate(n);
     idx.sort_unstable_by(by_logit);
@@ -1661,22 +1258,6 @@ pub(crate) fn sample(logits: &[f32], sampling: Sampling, rng: Option<&mut StdRng
     }
 }
 
-/// Draws tokens from a row of logits, carrying the sampling stream with it.
-///
-/// [`Gpt2::generate`] and friends sample internally; this is the same drawing
-/// logic for callers that own the loop themselves, and it owns its RNG so no
-/// caller has to name `rand`'s types.
-///
-/// ```no_run
-/// # use forge::{Sampler, Sampling};
-/// let mut s = Sampler::new(1337);
-/// let logits = vec![0.1f32, 2.0, 0.3];
-/// let id = s.pick(&logits, Sampling::TopK { k: 2, temperature: 0.8, seed: 0 });
-/// ```
-///
-/// `Sampling::TopK`'s own `seed` field is ignored here — the stream is this
-/// sampler's, seeded once at [`Sampler::new`], so successive picks continue it
-/// rather than restarting it.
 pub struct Sampler {
     rng: StdRng,
 }
@@ -1688,24 +1269,11 @@ impl Sampler {
         }
     }
 
-    /// One token id from `logits`. Deterministic under [`Sampling::Greedy`];
-    /// otherwise it advances this sampler's stream.
     pub fn pick(&mut self, logits: &[f32], sampling: Sampling) -> u32 {
         sample(logits, sampling, Some(&mut self.rng))
     }
 
-    /// Restart the stream. Same contract as constructing a fresh sampler.
     pub fn reseed(&mut self, seed: u64) {
         self.rng = StdRng::seed_from_u64(seed);
     }
-}
-
-fn argmax(v: &[f32]) -> u32 {
-    let mut best = 0usize;
-    for (i, &x) in v.iter().enumerate() {
-        if x > v[best] {
-            best = i;
-        }
-    }
-    best as u32
 }

@@ -1,23 +1,16 @@
 [package]
-# `forge` was taken on crates.io in 2017, so the crate publishes as `forge-ml`.
-# `[lib] name` below keeps the import path `use forge::...` for dependents.
 name = "forge-ml"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
-# 1.85 for edition 2024, but src/tensor.rs uses integer `is_multiple_of`, which
-# landed in 1.87 — clippy's incompatible_msrv lint holds this honest.
 rust-version = "1.87"
 license = "AGPL-3.0-only"
-description = "A WebGPU-native machine learning runtime in Rust: train and run GPT-2 on any GPU wgpu reaches, with no CUDA and no Python"
+description = "A WebGPU-native machine learning runtime in Rust: train and run GPT-2 and encoder-decoder transformers on any GPU wgpu reaches, with no CUDA and no Python"
 repository = "https://github.com/Aisuko/forge"
 homepage = "https://aisuko.github.io/forge/"
 documentation = "https://docs.rs/forge-ml"
 readme = "README.md"
-keywords = ["machine-learning", "webgpu", "wgpu", "gpt2", "transformer"]
+keywords = ["machine-learning", "webgpu", "wgpu", "gpt2", "encoder-decoder"]
 categories = ["science", "wasm", "graphics"]
-# Without this the tarball is 38.8 MiB — the 43 MB checkpoint, the site, the
-# scripts — and crates.io rejects it at 10 MiB. With it, 439 KiB. The WGSL is
-# not optional: src/backend/wgpu/mod.rs include_str!s every shader.
 include = [
     "src/**/*.rs",
     "shaders/*.wgsl",
@@ -34,21 +27,13 @@ crate-type = ["rlib", "cdylib"]
 [workspace]
 members = ["tools/council", "tools/forge-top", "tools/surprise"]
 
-# `train` is not a default feature, so docs.rs needs all-features to show it.
-# The `docsrs` cfg turns on the doc(cfg(...)) badges in src/lib.rs.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-# Autograd, AdamW and the backward kernels. Off by default: a dependent doing
-# inference should not compile a tape it never records, and src/wasm.rs exports
-# no training at all. Gates code, not dependencies — there are none to gate.
 train = []
 
-# The training targets. `required-features` makes a default build skip them
-# rather than fail to compile them, which keeps `cargo package` green. Cargo
-# merges these with autodiscovered targets, so nothing else is lost.
 [[test]]
 name = "training"
 required-features = ["train"]
@@ -63,10 +48,6 @@ required-features = ["train"]
 
 [[test]]
 name = "encoder_ops"
-required-features = ["train"]
-
-[[test]]
-name = "encoder_model"
 required-features = ["train"]
 
 [[example]]
@@ -86,17 +67,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wgpu = "26"
 
-# Native only: sync facades (pollster / poll-wait readback) and rayon.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4"
 rayon = "1"
 
-# The integration tests exercise the async inference API — the path the browser
-# takes — so they need a blocking executor.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "0.4"
 
-# Browser (wasm32): async-only device APIs + JS bindings.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 # No source-level `use`, but the #[wasm_bindgen] macro expands the async
@@ -113,5 +90,4 @@ opt-level = 2
 opt-level = 3
 
 [profile.release]
-# Smaller wasm binaries; negligible effect on native perf here.
 lto = "thin"
